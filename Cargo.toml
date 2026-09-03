@@ -1,0 +1,12 @@
+[package]
+name = "mitos-terminal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+portable-pty = "0.8.1"  # Layer 1: Process handling
+vte = "0.13.0"          # Layer 2: ANSI parser
+eframe = "0.28.1"       # Layer 4: GUI Framework
+egui = "0.28.1"         # Layer 4: Immediate mode UI
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = "1.0"
