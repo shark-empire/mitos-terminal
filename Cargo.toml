@@ -10,3 +10,5 @@ eframe = "0.28.1"       # Layer 4: GUI Framework
 egui = "0.28.1"         # Layer 4: Immediate mode UI
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
