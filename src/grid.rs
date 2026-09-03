@@ -1,6 +1,8 @@
 use vte::{Params, Perform, Parser};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+// Import the shared MROP types and constants from mitos-utils
+use mitos_utils::ipc::{RichWidget, OSC_WIDGET, OSC_NEW_BLOCK};
 
 // --- 1. Standard Cell Definition ---
 #[derive(Clone, Copy, PartialEq)]
@@ -20,19 +22,8 @@ impl Default for Cell {
     }
 }
 
-// --- 2. MROP (MITOS Rich Output Protocol) Definitions ---
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "type")]
-pub enum RichWidget {
-    #[serde(rename = "button")]
-    Button { label: String, cmd: String },
-    #[serde(rename = "progress")]
-    Progress { percent: f32, color: Option<String> },
-    #[serde(rename = "sparkline")]
-    Sparkline { data: Vec<f32> },
-}
-
-// --- 3. Execution Block (The "Card" System) ---
+// --- 2. Execution Block (The "Card" System) ---
+// Notice: RichWidget is now imported from mitos_utils::ipc!
 pub struct ExecutionBlock {
     pub prompt: String,
     pub cells: Vec<Vec<Cell>>, 
@@ -57,7 +48,7 @@ impl ExecutionBlock {
     }
 }
 
-// --- 4. Main Terminal Grid Engine ---
+// --- 3. Main Terminal Grid Engine ---
 pub struct TerminalGrid {
     pub cols: usize,
     pub blocks: Vec<ExecutionBlock>, // Historical Blocks
@@ -70,8 +61,6 @@ pub struct TerminalGrid {
 }
 
 impl TerminalGrid {
-    // Note: Kept `rows` in signature so your main.rs doesn't break, 
-    // but blocks now grow dynamically based on output!
     pub fn new(cols: usize, _rows: usize) -> Self {
         let initial_block = ExecutionBlock::new("mitos@user:~$ ".to_string(), cols);
         Self {
@@ -100,7 +89,6 @@ impl Perform for TerminalGrid {
             self.cursor_y += 1;
         }
 
-        // Auto-grow the block if the cursor moves past existing rows
         while self.current_block.cells.len() <= self.cursor_y {
             self.current_block.add_row(self.cols);
         }
@@ -134,25 +122,23 @@ impl Perform for TerminalGrid {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
-        // Handle ANSI colors (SGR)
         if intermediates.is_empty() && action == 'm' {
             for param in params.iter() {
                 for subparam in param {
                     match subparam {
-                        0 => { self.current_fg = [200, 200, 200]; self.current_bg = [20, 20, 25]; } // Reset
-                        31 => self.current_fg = [255, 85, 85],   // Red
-                        32 => self.current_fg = [85, 255, 85],   // Green
-                        33 => self.current_fg = [255, 255, 85],  // Yellow
-                        34 => self.current_fg = [85, 85, 255],   // Blue
-                        35 => self.current_fg = [255, 85, 255],  // Magenta
-                        36 => self.current_fg = [85, 255, 255],  // Cyan
-                        37 => self.current_fg = [200, 200, 200], // White/Light Grey
+                        0 => { self.current_fg = [200, 200, 200]; self.current_bg = [20, 20, 25]; }
+                        31 => self.current_fg = [255, 85, 85],
+                        32 => self.current_fg = [85, 255, 85],
+                        33 => self.current_fg = [255, 255, 85],
+                        34 => self.current_fg = [85, 85, 255],
+                        35 => self.current_fg = [255, 85, 255],
+                        36 => self.current_fg = [85, 255, 255],
+                        37 => self.current_fg = [200, 200, 200],
                         _ => {}
                     }
                 }
             }
         } 
-        // Handle Cursor Movement (e.g., \x1b[H)
         else if action == 'H' || action == 'f' {
             let y = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&1).saturating_sub(1) as usize;
             let x = params.iter().nth(1).and_then(|p| p.get(0)).unwrap_or(&1).saturating_sub(1) as usize;
@@ -164,7 +150,6 @@ impl Perform for TerminalGrid {
                 self.current_block.add_row(self.cols);
             }
         }
-        // Handle Erase in Display (e.g., the `clear` command)
         else if action == 'J' {
             let mode = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&0);
             if *mode == 2 || *mode == 3 {
@@ -180,14 +165,15 @@ impl Perform for TerminalGrid {
     fn put(&mut self, _: u8) {}
     fn unhook(&mut self) {}
     
-    // --- THE MAGIC: MROP & Block Management ---
+    // --- THE MAGIC: MROP & Block Management using mitos-utils ---
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         if params.is_empty() { return; }
         
         if let Ok(ps) = std::str::from_utf8(params[0]) {
-            // 1. MROP Widget Injection
-            if ps == "MITOS_WIDGET" && params.len() >= 2 {
+            // 1. MROP Widget Injection (using shared OSC_WIDGET constant)
+            if ps == OSC_WIDGET && params.len() >= 2 {
                 if let Ok(pt) = std::str::from_utf8(params[1]) {
+                    // Parse JSON into the shared RichWidget type
                     if let Ok(widget) = serde_json::from_str::<RichWidget>(pt) {
                         self.current_block.widgets.insert(
                             (self.cursor_y, self.cursor_x), 
@@ -196,15 +182,14 @@ impl Perform for TerminalGrid {
                     }
                 }
             }
-            // 2. Execution Block Finalization
-            else if ps == "MITOS_NEW_BLOCK" {
+            // 2. Execution Block Finalization (using shared OSC_NEW_BLOCK constant)
+            else if ps == OSC_NEW_BLOCK {
                 let prompt = if params.len() >= 2 {
                     std::str::from_utf8(params[1]).unwrap_or("mitos@user:~$ ").to_string()
                 } else {
                     "mitos@user:~$ ".to_string()
                 };
                 
-                // Move current block to history
                 self.current_block.is_active = false;
                 let old_block = std::mem::replace(
                     &mut self.current_block, 
@@ -212,7 +197,6 @@ impl Perform for TerminalGrid {
                 );
                 self.blocks.push(old_block);
                 
-                // Reset cursor for the new block
                 self.cursor_x = 0;
                 self.cursor_y = 0;
             }
