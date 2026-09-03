@@ -23,7 +23,6 @@ impl Default for Cell {
 }
 
 // --- 2. Execution Block (The "Card" System) ---
-// Notice: RichWidget is now imported from mitos_utils::ipc!
 pub struct ExecutionBlock {
     pub prompt: String,
     pub cells: Vec<Vec<Cell>>, 
@@ -79,6 +78,56 @@ impl TerminalGrid {
         for &byte in bytes {
             self.parser.advance(self, byte);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // IPC Support: For mitos-system-monitor integration
+    // ------------------------------------------------------------------
+
+    /// Serialize the entire visible history into plain text for IPC scraping.
+    /// This allows the System Monitor to "read" the terminal's memory over a Unix Socket.
+    pub fn snapshot_text(&self) -> String {
+        let mut out = String::new();
+
+        // Helper closure to extract text from a specific block
+        let extract = |block: &ExecutionBlock, out: &mut String| {
+            out.push_str(&format!("── {}{}\n", 
+                block.prompt, 
+                if block.is_active { " (active)" } else { "" }
+            ));
+            for row in &block.cells {
+                // Extract characters, trim trailing whitespace for clean reading
+                let line: String = row.iter().map(|c| c.character).collect();
+                out.push_str(line.trim_end());
+                out.push('\n');
+            }
+            out.push('\n');
+        };
+
+        // Dump historical blocks
+        for block in &self.blocks {
+            extract(block, &mut out);
+        }
+        // Dump current active block
+        extract(&self.current_block, &mut out);
+
+        out
+    }
+
+    /// Insert a rich widget pushed over IPC (e.g., a Kill button from the monitor).
+    /// Each injected widget gets its own fresh row so it never clobbers user output.
+    pub fn inject_widget(&mut self, widget: RichWidget) {
+        // Move to the next line to avoid overwriting the user's active prompt
+        self.cursor_y += 1;
+        self.cursor_x = 0;
+
+        // Auto-grow the block if the new row doesn't exist yet
+        while self.current_block.cells.len() <= self.cursor_y {
+            self.current_block.add_row(self.cols);
+        }
+
+        // Insert the widget at the start of the new row
+        self.current_block.widgets.insert((self.cursor_y, 0), widget);
     }
 }
 
