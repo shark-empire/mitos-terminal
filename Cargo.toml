@@ -8,7 +8,7 @@ portable-pty = "0.8.1"  # Layer 1: Process handling
 vte = "0.13.0"          # Layer 2: ANSI parser
 eframe = "0.28.1"       # Layer 4: GUI Framework
 egui = "0.28.1"         # Layer 4: Immediate mode UI
-tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.38", features = ["full"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
