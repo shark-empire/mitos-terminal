@@ -1,0 +1,72 @@
+name: MITOS Terminal CI
+
+on:
+  push:
+    branches: [ "main", "master", "dev" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-build-test:
+    name: Check, Build, and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------
+      # CRITICAL: Handling your local `mitos-utils` dependency
+      # ---------------------------------------------------------
+      # If mitos-terminal and mitos-utils are in the SAME repo (Workspace), 
+      # you don't need to do anything here.
+      # If they are in SEPARATE GitHub repos, uncomment the block below 
+      # so the CI runner can fetch it before compiling:
+      
+      # - name: Clone mitos-utils (If separate repo)
+      #   run: |
+      #     git clone https://github.com/shark-empire/mitos-utils.git ../mitos-utils
+
+      - name: Install system dependencies (eframe, arboard, PTY)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libssl-dev \
+            libclang-dev \
+            pkg-config \
+            libfontconfig1-dev \
+            libx11-dev \
+            libxext-dev \
+            libxtst-dev \
+            libxrandr-dev \
+            libxcb1-dev \
+            xclip \
+            wl-clipboard
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: 1. Cargo Check (Fast syntax/dependency check)
+        run: cargo check --verbose
+
+      - name: 2. Cargo Build (Release profile)
+        run: cargo build --release --verbose
+
+      - name: 3. Cargo Test (Run unit/integration tests)
+        run: cargo test --verbose
+
+      - name: 4. Cargo Clippy (Linting & Best Practices)
+        run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true # Remove this line if you want CI to fail on warnings
