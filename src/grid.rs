@@ -1,16 +1,8 @@
 use vte::{Params, Perform, Parser};
 use std::collections::{HashMap, HashSet};
-
-// Import the shared MROP types and constants from mitos-utils
 use mitos_utils::ipc::{RichWidget, OSC_WIDGET, OSC_NEW_BLOCK};
-
-// Pure text-pattern detection only (no I/O) — see pkg_bridge.rs. The
-// actual mitos-pkgd lookup stays out of TerminalGrid entirely; this
-// just reports candidate command names via `process`'s return value
-// for main.rs to act on.
 use crate::pkg_bridge::detect_missing_command;
 
-// --- 1. Standard Cell Definition ---
 #[derive(Clone, Copy, PartialEq)]
 pub struct Cell {
     pub character: char,
@@ -28,23 +20,24 @@ impl Default for Cell {
     }
 }
 
-// --- 2. Execution Block (The "Card" System) ---
 pub struct ExecutionBlock {
     pub prompt: String,
     pub cells: Vec<Vec<Cell>>, 
     pub widgets: HashMap<(usize, usize), RichWidget>, 
     pub is_active: bool, 
     pub start_time: std::time::Instant,
+    pub ghost_text: Option<String>, // New: For mitos-file-manager ghost prompts
 }
 
 impl ExecutionBlock {
     pub fn new(prompt: String, cols: usize) -> Self {
         Self {
             prompt,
-            cells: vec![vec![Cell::default(); cols]], // Start with one empty row
+            cells: vec![vec![Cell::default(); cols]], 
             widgets: HashMap::new(),
             is_active: true,
             start_time: std::time::Instant::now(),
+            ghost_text: None,
         }
     }
     
@@ -53,33 +46,25 @@ impl ExecutionBlock {
     }
 }
 
-// --- 3. Main Terminal Grid Engine ---
+pub struct ProcessResult {
+    pub missing_commands: Vec<String>,
+    pub autocomplete_request: Option<String>,
+}
+
 pub struct TerminalGrid {
     pub cols: usize,
-    pub blocks: Vec<ExecutionBlock>, // Historical Blocks
-    pub current_block: ExecutionBlock, // Active Block
+    pub blocks: Vec<ExecutionBlock>, 
+    pub current_block: ExecutionBlock, 
     pub cursor_x: usize,
     pub cursor_y: usize, 
     parser: Parser,
     current_fg: [u8; 3],
     current_bg: [u8; 3],
-    // The theme's resting colors — what an ANSI reset (`\x1b[0m`) and
-    // freshly-printed text with no color codes yet applied fall back
-    // to. Separate from current_fg/current_bg (which track whatever
-    // color is *actively selected* right now) so `apply_theme` has
-    // something to change that persists across resets — see that
-    // method below.
     default_fg: [u8; 3],
     default_bg: [u8; 3],
-    // Command names detected this `process()` call as "not found" —
-    // drained and returned by `process`, then acted on by main.rs. See
-    // pkg_bridge.rs for why the actual mitos-pkgd lookup doesn't happen
-    // here.
     pending_lookups: Vec<String>,
-    // Every command already offered an install suggestion this
-    // session, so re-running the same missing command doesn't spam a
-    // fresh button each time.
     already_suggested: HashSet<String>,
+    pending_autocomplete: Option<String>, // New: Shell asks terminal to query file manager
 }
 
 impl TerminalGrid {
@@ -100,52 +85,59 @@ impl TerminalGrid {
             default_bg,
             pending_lookups: Vec::new(),
             already_suggested: HashSet::new(),
+            pending_autocomplete: None,
         }
     }
 
-    /// Applies a new theme going forward: updates both the resting
-    /// colors (so a later `\x1b[0m` reset returns to *this* theme, not
-    /// the hardcoded original) and the currently-active colors (so text
-    /// printed right after this call picks it up immediately, without
-    /// needing an explicit reset first).
-    ///
-    /// Known limitation: this does not repaint characters already on
-    /// screen — only new output. Real-time recoloring of existing
-    /// history would mean storing a palette index per cell instead of
-    /// literal RGB (like this grid does today) and remapping the
-    /// palette, a bigger change than this integration needed to solve
-    /// yet.
+    /// Fully applies a new theme, retroactively updating all existing cells
+    /// that match the old default colors, as well as setting the new defaults.
     pub fn apply_theme(&mut self, fg: [u8; 3], bg: [u8; 3]) {
+        let old_fg = self.default_fg;
+        let old_bg = self.default_bg;
         self.default_fg = fg;
         self.default_bg = bg;
         self.current_fg = fg;
         self.current_bg = bg;
+        
+        // Retroactively repaint existing history
+        for block in &mut self.blocks {
+            for row in &mut block.cells {
+                for cell in row.iter_mut() {
+                    if cell.fg == old_fg { cell.fg = fg; }
+                    if cell.bg == old_bg { cell.bg = bg; }
+                }
+            }
+        }
+        for row in &mut self.current_block.cells {
+            for cell in row.iter_mut() {
+                if cell.fg == old_fg { cell.fg = fg; }
+                if cell.bg == old_bg { cell.bg = bg; }
+            }
+        }
     }
 
-    pub fn process(&mut self, bytes: &[u8]) -> Vec<String> {
+    pub fn set_ghost_text(&mut self, text: Option<String>) {
+        self.current_block.ghost_text = text;
+    }
+
+    pub fn process(&mut self, bytes: &[u8]) -> ProcessResult {
         for &byte in bytes {
             self.parser.advance(self, byte);
         }
-        std::mem::take(&mut self.pending_lookups)
+        ProcessResult {
+            missing_commands: std::mem::take(&mut self.pending_lookups),
+            autocomplete_request: self.pending_autocomplete.take(),
+        }
     }
 
-    // ------------------------------------------------------------------
-    // IPC Support: For mitos-system-monitor integration
-    // ------------------------------------------------------------------
-
-    /// Serialize the entire visible history into plain text for IPC scraping.
-    /// This allows the System Monitor to "read" the terminal's memory over a Unix Socket.
     pub fn snapshot_text(&self) -> String {
         let mut out = String::new();
-
-        // Helper closure to extract text from a specific block
         let extract = |block: &ExecutionBlock, out: &mut String| {
             out.push_str(&format!("── {}{}\n", 
                 block.prompt, 
                 if block.is_active { " (active)" } else { "" }
             ));
             for row in &block.cells {
-                // Extract characters, trim trailing whitespace for clean reading
                 let line: String = row.iter().map(|c| c.character).collect();
                 out.push_str(line.trim_end());
                 out.push('\n');
@@ -153,38 +145,24 @@ impl TerminalGrid {
             out.push('\n');
         };
 
-        // Dump historical blocks
         for block in &self.blocks {
             extract(block, &mut out);
         }
-        // Dump current active block
         extract(&self.current_block, &mut out);
-
         out
     }
 
-    /// Insert a rich widget pushed over IPC (e.g., a Kill button from the monitor).
-    /// Each injected widget gets its own fresh row so it never clobbers user output.
     pub fn inject_widget(&mut self, widget: RichWidget) {
-        // Move to the next line to avoid overwriting the user's active prompt
         self.cursor_y += 1;
         self.cursor_x = 0;
 
-        // Auto-grow the block if the new row doesn't exist yet
         while self.current_block.cells.len() <= self.cursor_y {
             self.current_block.add_row(self.cols);
         }
 
-        // Insert the widget at the start of the new row
         self.current_block.widgets.insert((self.cursor_y, 0), widget);
     }
 
-    /// Checks the line the cursor is currently on (about to be
-    /// completed by the line feed that triggered this call) for a
-    /// "command not found"-shaped message, queuing the attempted
-    /// command name into `pending_lookups` if so. Pure text matching —
-    /// see pkg_bridge.rs for the actual daemon lookup, which happens
-    /// later, outside TerminalGrid entirely.
     fn check_line_for_missing_command(&mut self) {
         let Some(row) = self.current_block.cells.get(self.cursor_y) else {
             return;
@@ -192,9 +170,6 @@ impl TerminalGrid {
         let line: String = row.iter().map(|c| c.character).collect();
 
         if let Some(cmd) = detect_missing_command(line.trim_end()) {
-            // HashSet::insert returns true only the first time a value
-            // is added — so this only queues a lookup the first time a
-            // given missing command is seen this session.
             if self.already_suggested.insert(cmd.clone()) {
                 self.pending_lookups.push(cmd);
             }
@@ -223,19 +198,25 @@ impl Perform for TerminalGrid {
 
     fn execute(&mut self, byte: u8) {
         match byte {
-            0x08 => { // Backspace
+            0x08 => { 
                 if self.cursor_x > 0 { 
                     self.cursor_x -= 1; 
+                    // Clear ghost text if user backspaces
+                    if let Some(g) = &mut self.current_block.ghost_text {
+                        g.pop();
+                        if g.is_empty() { self.current_block.ghost_text = None; }
+                    }
                 }
             }
-            0x0A | 0x0B | 0x0C => { // Line feed
+            0x0A | 0x0B | 0x0C => { 
                 self.check_line_for_missing_command();
                 self.cursor_y += 1;
                 while self.current_block.cells.len() <= self.cursor_y {
                     self.current_block.add_row(self.cols);
                 }
+                self.current_block.ghost_text = None; // Clear on enter
             }
-            0x0D => { // Carriage return
+            0x0D => { 
                 self.cursor_x = 0;
             }
             _ => {}
@@ -286,24 +267,17 @@ impl Perform for TerminalGrid {
     fn put(&mut self, _: u8) {}
     fn unhook(&mut self) {}
     
-    // --- THE MAGIC: MROP & Block Management using mitos-utils ---
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         if params.is_empty() { return; }
         
         if let Ok(ps) = std::str::from_utf8(params[0]) {
-            // 1. MROP Widget Injection (using shared OSC_WIDGET constant)
             if ps == OSC_WIDGET && params.len() >= 2 {
                 if let Ok(pt) = std::str::from_utf8(params[1]) {
-                    // Parse JSON into the shared RichWidget type
                     if let Ok(widget) = serde_json::from_str::<RichWidget>(pt) {
-                        self.current_block.widgets.insert(
-                            (self.cursor_y, self.cursor_x), 
-                            widget
-                        );
+                        self.current_block.widgets.insert((self.cursor_y, self.cursor_x), widget);
                     }
                 }
             }
-            // 2. Execution Block Finalization (using shared OSC_NEW_BLOCK constant)
             else if ps == OSC_NEW_BLOCK {
                 let prompt = if params.len() >= 2 {
                     std::str::from_utf8(params[1]).unwrap_or("mitos@user:~$ ").to_string()
@@ -312,14 +286,16 @@ impl Perform for TerminalGrid {
                 };
                 
                 self.current_block.is_active = false;
-                let old_block = std::mem::replace(
-                    &mut self.current_block, 
-                    ExecutionBlock::new(prompt, self.cols)
-                );
+                let old_block = std::mem::replace(&mut self.current_block, ExecutionBlock::new(prompt, self.cols));
                 self.blocks.push(old_block);
-                
                 self.cursor_x = 0;
                 self.cursor_y = 0;
+            }
+            // New: mitos-shell requests the terminal to query the File Manager for Ghost Text
+            else if ps == "MITOS_AUTOCOMPLETE" && params.len() >= 2 {
+                if let Ok(pt) = std::str::from_utf8(params[1]) {
+                    self.pending_autocomplete = Some(pt.to_string());
+                }
             }
         }
     }
