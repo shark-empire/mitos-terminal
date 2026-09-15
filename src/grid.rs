@@ -17,13 +17,12 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             character: ' ',
-            fg0)` → old text at 16% opacity | Core: [200, 200, 200],
+            fg: [200, 200, 200],
             bg: [20, 20, 25],
             intensity: 0.0,
         }
     }
 }
-
 
 // Added Clone so we can push to both history and the notification queue
 #[derive(Clone)]
@@ -76,7 +75,7 @@ pub struct TerminalGrid {
     pending_lookups: Vec<String>,
     already_suggested: HashSet<String>,
     pending_autocomplete: Option<String>, 
-    pending_closed_blocks: Vec<ExecutionBlock>, // Added missing field
+    pending_closed_blocks: Vec<ExecutionBlock>,
     pub any_hot: bool,
 }
 
@@ -100,7 +99,7 @@ impl TerminalGrid {
             pending_lookups: Vec::new(),
             already_suggested: HashSet::new(),
             pending_autocomplete: None,
-            pending_closed_blocks: Vec::new(), // Initialized here
+            pending_closed_blocks: Vec::new(),
             any_hot: false,
         }
     }
@@ -144,7 +143,6 @@ impl TerminalGrid {
         ProcessResult {
             missing_commands: std::mem::take(&mut self.pending_lookups),
             autocomplete_request: self.pending_autocomplete.take(),
-            // Fixed typo: was sod::mem::take
             closed_blocks: std::mem::take(&mut self.pending_closed_blocks), 
         }
     }
@@ -172,33 +170,33 @@ impl TerminalGrid {
     }
 
     /// Call once per frame from main.rs, before painting.
-/// Cools every hot glyph; sleeps entirely when nothing is hot.
-pub fn tick(&mut self, dt: f32) {
-    if !self.any_hot { return; }                 // cold history = zero cost
-    let cool = dt * 2.2;                         // ~0.45 s white-hot → settled
-    let mut still_hot = false;
-    for block in self.blocks.iter_mut().chain(std::iter::once(&mut self.current_block)) {
-        for row in block.cells.iter_mut() {
-            for cell in row.iter_mut() {
-                if cell.intensity > 0.0 {
-                    cell.intensity = (cell.intensity - cool).max(0.0);
-                    still_hot |= cell.intensity > 0.0;
+    /// Cools every hot glyph; sleeps entirely when nothing is hot.
+    pub fn tick(&mut self, dt: f32) {
+        if !self.any_hot { return; }                 // cold history = zero cost
+        let cool = dt * 2.2;                         // ~0.45 s white-hot → settled
+        let mut still_hot = false;
+        for block in self.blocks.iter_mut().chain(std::iter::once(&mut self.current_block)) {
+            for row in block.cells.iter_mut() {
+                for cell in row.iter_mut() {
+                    if cell.intensity > 0.0 {
+                        cell.intensity = (cell.intensity - cool).max(0.0);
+                        still_hot |= cell.intensity > 0.0;
+                    }
                 }
             }
         }
+        self.any_hot = still_hot;
     }
-    self.any_hot = still_hot;
-}
 
-/// Re-ignite a row for effect beats (error glitch, MROP widget flash).
-pub fn spike_row(&mut self, row: usize) {
-    if let Some(r) = self.current_block.cells.get_mut(row) {
-        for c in r.iter_mut() {
-            if c.character != ' ' { c.intensity = 1.0; }
+    /// Re-ignite a row for effect beats (error glitch, MROP widget flash).
+    pub fn spike_row(&mut self, row: usize) {
+        if let Some(r) = self.current_block.cells.get_mut(row) {
+            for c in r.iter_mut() {
+                if c.character != ' ' { c.intensity = 1.0; }
+            }
+            self.any_hot = true;
         }
-        self.any_hot = true;
     }
-}
 
     pub fn inject_widget(&mut self, widget: RichWidget) {
         self.cursor_y += 1;
@@ -221,32 +219,30 @@ pub fn spike_row(&mut self, row: usize) {
             if self.already_suggested.insert(cmd.clone()) {
                 self.pending_lookups.push(cmd);
                 self.spike_row(self.cursor_y);   // the "command not found" line flares red + jitters
-
             }
         }
     }
 }
 
 impl Perform for TerminalGrid {
-fn print(&mut self, c: char) {
-    if self.cursor_x >= self.cols {
-        self.cursor_x = 0;
-        self.cursor_y += 1;
-    }
-    while self.current_block.cells.len() <= self.cursor_y {
-        self.current_block.add_row(self.cols);
-    }
+    fn print(&mut self, c: char) {
+        if self.cursor_x >= self.cols {
+            self.cursor_x = 0;
+            self.cursor_y += 1;
+        }
+        while self.current_block.cells.len() <= self.cursor_y {
+            self.current_block.add_row(self.cols);
+        }
 
-    self.current_block.cells[self.cursor_y][self.cursor_x] = Cell {
-        character: c,
-        fg: self.current_fg,
-        bg: self.current_bg,
-        intensity: 1.0,          // ← THE SPIKE: this glyph just landed
-    };
-    self.any_hot = true;
-    self.cursor_x += 1;
-}
-
+        self.current_block.cells[self.cursor_y][self.cursor_x] = Cell {
+            character: c,
+            fg: self.current_fg,
+            bg: self.current_bg,
+            intensity: 1.0,          // ← THE SPIKE: this glyph just landed
+        };
+        self.any_hot = true;
+        self.cursor_x += 1;
+    }
 
     fn execute(&mut self, byte: u8) {
         match byte {
@@ -337,14 +333,11 @@ fn print(&mut self, c: char) {
                 };
                 
                 self.current_block.is_active = false;
-                // Calculate how long the command took before we move it
                 self.current_block.duration = Some(self.current_block.start_time.elapsed());
                 
                 let old_block = std::mem::replace(&mut self.current_block, ExecutionBlock::new(prompt, self.cols));
                 
-                // Push a clone to the visual history
                 self.blocks.push(old_block.clone());
-                // Queue the original for main.rs to process (e.g., for notifications)
                 self.pending_closed_blocks.push(old_block);
                 
                 self.cursor_x = 0;
@@ -370,4 +363,3 @@ pub fn hash3(a: u64, b: u64, c: u64) -> u64 {
     x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     x ^ (x >> 31)
 }
-
