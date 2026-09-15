@@ -1,4 +1,5 @@
 use vte::{Params, Perform, Parser};
+use std::time::{Duration, Instant}; 
 use std::collections::{HashMap, HashSet};
 use mitos_utils::ipc::{RichWidget, OSC_WIDGET, OSC_NEW_BLOCK};
 use crate::pkg_bridge::detect_missing_command;
@@ -20,6 +21,8 @@ impl Default for Cell {
     }
 }
 
+// Added Clone so we can push to both history and the notification queue
+#[derive(Clone)]
 pub struct ExecutionBlock {
     pub prompt: String,
     pub cells: Vec<Vec<Cell>>, 
@@ -27,6 +30,7 @@ pub struct ExecutionBlock {
     pub is_active: bool, 
     pub start_time: std::time::Instant,
     pub ghost_text: Option<String>, 
+    pub duration: Option<Duration>, 
 }
 
 impl ExecutionBlock {
@@ -38,6 +42,7 @@ impl ExecutionBlock {
             is_active: true,
             start_time: std::time::Instant::now(),
             ghost_text: None,
+            duration: None,
         }
     }
     
@@ -49,6 +54,7 @@ impl ExecutionBlock {
 pub struct ProcessResult {
     pub missing_commands: Vec<String>,
     pub autocomplete_request: Option<String>,
+    pub closed_blocks: Vec<ExecutionBlock>, 
 }
 
 pub struct TerminalGrid {
@@ -62,10 +68,11 @@ pub struct TerminalGrid {
     current_bg: [u8; 3],
     default_fg: [u8; 3],
     default_bg: [u8; 3],
-    pub prompt_color: [u8; 3], // New: Track accent color for the prompt
+    pub prompt_color: [u8; 3],
     pending_lookups: Vec<String>,
     already_suggested: HashSet<String>,
     pending_autocomplete: Option<String>, 
+    pending_closed_blocks: Vec<ExecutionBlock>, // Added missing field
 }
 
 impl TerminalGrid {
@@ -88,6 +95,7 @@ impl TerminalGrid {
             pending_lookups: Vec::new(),
             already_suggested: HashSet::new(),
             pending_autocomplete: None,
+            pending_closed_blocks: Vec::new(), // Initialized here
         }
     }
 
@@ -130,6 +138,8 @@ impl TerminalGrid {
         ProcessResult {
             missing_commands: std::mem::take(&mut self.pending_lookups),
             autocomplete_request: self.pending_autocomplete.take(),
+            // Fixed typo: was sod::mem::take
+            closed_blocks: std::mem::take(&mut self.pending_closed_blocks), 
         }
     }
 
@@ -288,8 +298,16 @@ impl Perform for TerminalGrid {
                 };
                 
                 self.current_block.is_active = false;
+                // Calculate how long the command took before we move it
+                self.current_block.duration = Some(self.current_block.start_time.elapsed());
+                
                 let old_block = std::mem::replace(&mut self.current_block, ExecutionBlock::new(prompt, self.cols));
-                self.blocks.push(old_block);
+                
+                // Push a clone to the visual history
+                self.blocks.push(old_block.clone());
+                // Queue the original for main.rs to process (e.g., for notifications)
+                self.pending_closed_blocks.push(old_block);
+                
                 self.cursor_x = 0;
                 self.cursor_y = 0;
             }
