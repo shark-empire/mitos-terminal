@@ -2,19 +2,45 @@ mod grid;
 mod pty;
 mod pkg_bridge;
 
-use eframe::egui;
-use std::sync::{Arc, Mutex};
+// --- Standard Library ---
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+
+// --- Third-Party ---
+use arboard::Clipboard; // Semantic Clipboard (text/uri-list)
+use eframe::egui;
 use tokio::sync::mpsc;
-use grid::{TerminalGrid, ExecutionBlock, ProcessResult};
+use tokio::net::{UnixListener, UnixStream};
+use notify::{Watcher, RecursiveMode, Config, RecommendedWatcher};
+
+// --- Local / System Crates ---
+use grid::{TerminalGrid, ExecutionBlock};
 use pty::MitosPty;
 use mitos_utils::ipc::{self, RichWidget, IpcRequest, IpcResponse};
-use arboard::Clipboard; // NEW: For Semantic Clipboard (text/uri-list)
+
+// --- Constants ---
+const DEFAULT_COLS: u16 = 80;
+const DEFAULT_ROWS: u16 = 24;
+const DEFAULT_BG: [u8; 3] = [20, 20, 25];
+const DEFAULT_FG: [u8; 3] = [200, 200, 200];
+const DEFAULT_PROMPT: [u8; 3] = [85, 255, 85];
+
+// ============================================================================
+// APP STATE
+// ============================================================================
 
 struct MitosTerminalApp {
     grid: Arc<Mutex<TerminalGrid>>,
     input_tx: mpsc::Sender<u8>,
+    resize_tx: std::sync::mpsc::Sender<(u16, u16)>,
+    last_cols: u16,
+    last_rows: u16,
 }
+
+// ============================================================================
+// SYSTEM DAEMONS & IPC
+// ============================================================================
 
 fn spawn_ipc_server(grid: Arc<Mutex<TerminalGrid>>) {
     let socket_path = ipc::terminal_socket(std::process::id());
@@ -23,19 +49,19 @@ fn spawn_ipc_server(grid: Arc<Mutex<TerminalGrid>>) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("ipc runtime");
         rt.block_on(async move {
-            let listener = match tokio::net::UnixListener::bind(&socket_path) {
+            let listener = match UnixListener::bind(&socket_path) {
                 Ok(l) => l,
                 Err(e) => { eprintln!("[mitos-terminal] IPC bind failed: {e}"); return; }
             };
-            eprintln!("[mitos-terminal] IPC listening on {socket_path}");
+            eprintln!("[mitos-terminal] IPC listening on {:?}", socket_path);
 
             loop {
                 let (mut stream, _) = match listener.accept().await {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                let grid = Arc::clone(&grid);
                 
+                let grid = Arc::clone(&grid);
                 tokio::spawn(async move {
                     while let Ok(Some(req)) = ipc::ipc_recv::<IpcRequest>(&mut stream).await {
                         let resp = match req {
@@ -52,14 +78,12 @@ fn spawn_ipc_server(grid: Arc<Mutex<TerminalGrid>>) {
                                 IpcResponse::Ack
                             }
                             IpcRequest::ThemeChanged { bg, fg } => {
-                                grid.lock().unwrap().apply_theme(fg, bg, [85, 255, 85]); // Fallback prompt color
+                                grid.lock().unwrap().apply_theme(fg, bg, DEFAULT_PROMPT);
                                 IpcResponse::Ack
                             }
-                            IpcRequest::AutoCompletePath { partial_path: _ } => {
+                            IpcRequest::AutoCompletePath { .. } => {
                                 IpcResponse::AutoCompleteResult { suggestions: vec![] }
                             }
-                            // We don't strictly need to handle these requests here as we are the ones SENDING them,
-                            // but the enum requires us to match exhaustively if we add more variants later.
                             _ => IpcResponse::Ack,
                         };
                         
@@ -71,9 +95,6 @@ fn spawn_ipc_server(grid: Arc<Mutex<TerminalGrid>>) {
     });
 }
 
-// ------------------------------------------------------------------
-// NEW: Network Captive Portal Poller (mitos-network integration)
-// ------------------------------------------------------------------
 fn spawn_network_poller(grid: Arc<Mutex<TerminalGrid>>) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("network poller runtime");
@@ -83,27 +104,12 @@ fn spawn_network_poller(grid: Arc<Mutex<TerminalGrid>>) {
                 interval.tick().await;
                 let socket = ipc::network_socket();
                 
-                // Attempt to connect to mitos-network daemon
-                if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket).await {
+                if let Ok(mut stream) = UnixStream::connect(&socket).await {
                     let req = IpcRequest::GetNetworkStatus;
                     if ipc::ipc_send(&mut stream, &req).await.is_ok() {
                         if let Ok(Some(IpcResponse::NetworkStatus { is_captive_portal, .. })) = ipc::ipc_recv::<IpcResponse>(&mut stream).await {
                             if is_captive_portal {
-                                let g = Arc::clone(&grid);
-                                if let Ok(mut g_lock) = g.lock() {
-                                    // Inject Captive Portal Button if not already present
-                                    let widget = RichWidget::Button {
-                                        label: "🌐 Open Login Page".to_string(),
-                                        cmd: "xdg-open http://captive.apple.com".to_string(),
-                                    };
-                                    // Simple check to avoid spamming the button
-                                    let already_has = g_lock.current_block.widgets.values().any(|w| {
-                                        matches!(w, RichWidget::Button { label, .. } if label.contains("Login Page"))
-                                    });
-                                    if !already_has {
-                                        g_lock.inject_widget(widget);
-                                    }
-                                }
+                                inject_captive_portal_widget(&grid);
                             }
                         }
                     }
@@ -113,18 +119,79 @@ fn spawn_network_poller(grid: Arc<Mutex<TerminalGrid>>) {
     });
 }
 
-// ------------------------------------------------------------------
-// Settings & Theme Sync (mitos-settings integration)
-// ------------------------------------------------------------------
+fn inject_captive_portal_widget(grid: &Arc<Mutex<TerminalGrid>>) {
+    if let Ok(mut g_lock) = grid.lock() {
+        let widget = RichWidget::Button {
+            label: "🌐 Open Login Page".to_string(),
+            cmd: "xdg-open http://captive.apple.com".to_string(),
+        };
+        let already_has = g_lock.current_block.widgets.values().any(|w| {
+            matches!(w, RichWidget::Button { label, .. } if label.contains("Login Page"))
+        });
+        if !already_has {
+            g_lock.inject_widget(widget);
+        }
+    }
+}
+
+// ============================================================================
+// SETTINGS & THEME SYNC
+// ============================================================================
+
+fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>) {
+    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
+    let config_path = config_dir.join("mitos").join("home.conf");
+    
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = RecommendedWatcher::new(move |res| {
+            let _ = tx.send(res);
+        }, Config::default()).expect("Failed to create file watcher");
+
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            apply_home_conf_theme(&grid, &content);
+        }
+
+        let watch_dir = config_path.parent().unwrap().to_path_buf();
+        let _ = watcher.watch(&watch_dir, RecursiveMode::NonRecursive);
+
+        for res in rx {
+            if let Ok(event) = res {
+                let is_home_conf = event.paths.iter().any(|p| p.file_name() == Some(std::ffi::OsStr::new("home.conf")));
+                if is_home_conf {
+                    if let Ok(content) = std::fs::read_to_string(&config_path) {
+                        apply_home_conf_theme(&grid, &content);
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn apply_home_conf_theme(grid: &Arc<Mutex<TerminalGrid>>, content: &str) {
+    let (theme_mode, accent_color) = parse_home_conf(content);
+    
+    let (fg, bg) = match theme_mode.as_deref() {
+        Some("light") => ([30, 30, 30], [245, 245, 245]),
+        _ => (DEFAULT_FG, DEFAULT_BG), 
+    };
+    
+    let prompt = parse_color(accent_color.as_deref(), DEFAULT_PROMPT);
+    grid.lock().unwrap().apply_theme(fg, bg, prompt);
+}
+
 fn parse_home_conf(content: &str) -> (Option<String>, Option<String>) {
     let mut theme_mode = None;
     let mut accent_color = None;
     
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+        if line.is_empty() || line.starts_with('#') { continue; }
+        
         let mut parts = line.splitn(2, '=');
         let key = parts.next().map(|s| s.trim());
         let val = parts.next().map(|s| s.trim());
@@ -136,20 +203,6 @@ fn parse_home_conf(content: &str) -> (Option<String>, Option<String>) {
         }
     }
     (theme_mode, accent_color)
-}
-
-fn apply_home_conf_theme(grid: &Arc<Mutex<TerminalGrid>>, content: &str) {
-    let (theme_mode, accent_color) = parse_home_conf(content);
-    
-    // Map theme_mode to actual RGB values
-    let (fg, bg) = match theme_mode.as_deref() {
-        Some("light") => ([30, 30, 30], [245, 245, 245]),
-        _ => ([200, 200, 200], [20, 20, 25]), // Default MITOS Dark
-    };
-    
-    let prompt = parse_color(accent_color.as_deref(), [85, 255, 85]);
-    
-    grid.lock().unwrap().apply_theme(fg, bg, prompt);
 }
 
 fn parse_color(s: Option<&str>, default: [u8; 3]) -> [u8; 3] {
@@ -164,85 +217,74 @@ fn parse_color(s: Option<&str>, default: [u8; 3]) -> [u8; 3] {
     default
 }
 
-fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>) {
-    let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from(".config"));
-    let config_path = config_dir.join("mitos").join("home.conf");
-    
-    if let Some(parent) = config_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    std::thread::spawn(move || {
-        use notify::{Watcher, RecursiveMode, Config, RecommendedWatcher};
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        let mut watcher = RecommendedWatcher::new(move |res| {
-            let _ = tx.send(res);
-        }, Config::default()).expect("Failed to create file watcher");
-
-        // Initial load
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
-            apply_home_conf_theme(&grid, &content);
-        }
-
-        // Watch the parent directory (~/.config/mitos/) so we catch atomic renames
-        // (temp file + rename) used by mitos-settings.
-        let watch_dir = config_path.parent().unwrap().to_path_buf();
-        let _ = watcher.watch(&watch_dir, RecursiveMode::NonRecursive);
-
-        for res in rx {
-            if let Ok(event) = res {
-                // Check if the event involves home.conf
-                let is_home_conf = event.paths.iter().any(|p| p.file_name() == Some(std::ffi::OsStr::new("home.conf")));
-                if is_home_conf {
-                    if let Ok(content) = std::fs::read_to_string(&config_path) {
-                        apply_home_conf_theme(&grid, &content);
-                    }
-                }
-            }
-        }
-    });
-}
+// ============================================================================
+// APP IMPLEMENTATION
+// ============================================================================
 
 impl MitosTerminalApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let (tx, mut rx) = mpsc::channel::<u8>(1024);
+        // Channels
+        let (input_tx, mut input_rx) = mpsc::channel::<u8>(1024);
         let (pty_tx, mut pty_rx) = mpsc::channel::<Vec<u8>>(1024);
+        let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u16, u16)>(); 
 
-        let grid = Arc::new(Mutex::new(TerminalGrid::new(80, 24)));
-        let ui_grid = Arc::clone(&grid);
-
+        // State
+        let grid = Arc::new(Mutex::new(TerminalGrid::new(DEFAULT_COLS, DEFAULT_ROWS)));
+        
+        // Daemons
         spawn_ipc_server(Arc::clone(&grid));
         spawn_settings_watcher(Arc::clone(&grid)); 
-        spawn_network_poller(Arc::clone(&grid)); // Start network captive portal listener
+        spawn_network_poller(Arc::clone(&grid));
 
-        // Background Thread: PTY Reader/Writer
+        // PTY Threads
+        Self::spawn_pty_handler(pty_tx, input_rx, resize_rx);
+        Self::spawn_grid_processor(Arc::clone(&grid), pty_rx);
+
+        Self { 
+            grid, 
+            input_tx,
+            resize_tx,
+            last_cols: DEFAULT_COLS,
+            last_rows: DEFAULT_ROWS,
+        }
+    }
+
+    fn spawn_pty_handler(
+        pty_tx: mpsc::Sender<Vec<u8>>, 
+        mut input_rx: mpsc::Receiver<u8>, 
+        resize_rx: std::sync::mpsc::Receiver<(u16, u16)>
+    ) {
         std::thread::spawn(move || {
-            let pty = MitosPty::new(80, 24).expect("Failed to create PTY");
+            let pty = MitosPty::new(DEFAULT_COLS, DEFAULT_ROWS).expect("Failed to create PTY");
             let mut reader = pty.master.try_clone_reader().unwrap();
             let mut writer = pty.master.take_writer();
 
-            // Reader Loop
+            // Reader
             std::thread::spawn(move || {
                 let mut buf = [0; 1024];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => { let _ = pty_tx.blocking_send(buf[..n].to_vec()); }
-                        Err(_) => break,
-                    }
+                while let Ok(n) = reader.read(&mut buf) {
+                    if n == 0 { break; }
+                    let _ = pty_tx.blocking_send(buf[..n].to_vec());
                 }
             });
 
-            // Writer Loop (Async)
+            // Writer
             tokio::runtime::Runtime::new().unwrap().block_on(async {
-                while let Some(byte) = rx.recv().await {
+                while let Some(byte) = input_rx.recv().await {
                     let _ = writer.write_all(&[byte]);
                 }
             });
-        });
 
-        // Grid Update Loop
+            // Resizer
+            while let Ok((cols, rows)) = resize_rx.recv() {
+                if let Err(e) = pty.resize(cols, rows) {
+                    eprintln!("[mitos-terminal] Resize failed: {e}");
+                }
+            }
+        });
+    }
+
+    fn spawn_grid_processor(ui_grid: Arc<Mutex<TerminalGrid>>, mut pty_rx: mpsc::Receiver<Vec<u8>>) {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
@@ -252,7 +294,7 @@ impl MitosTerminalApp {
                         g.process(&bytes)
                     };
 
-                    // 1. Handle mitos-pkg "command not found" lookups
+                    // 1. mitos-pkg lookup
                     for cmd in result.missing_commands {
                         let grid_for_lookup = Arc::clone(&ui_grid);
                         tokio::task::spawn_blocking(move || {
@@ -264,12 +306,11 @@ impl MitosTerminalApp {
                         });
                     }
 
-                    // 2. Handle File Manager Autocomplete
+                    // 2. File Manager Autocomplete
                     if let Some(partial) = result.autocomplete_request {
                         let grid_for_ac = Arc::clone(&ui_grid);
                         tokio::spawn(async move {
-                            let socket_path = ipc::file_manager_socket();
-                            if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
+                            if let Ok(mut stream) = UnixStream::connect(ipc::file_manager_socket()).await {
                                 let req = IpcRequest::AutoCompletePath { partial_path: partial };
                                 if ipc::ipc_send(&mut stream, &req).await.is_ok() {
                                     if let Ok(Some(IpcResponse::AutoCompleteResult { suggestions })) = ipc::ipc_recv::<IpcResponse>(&mut stream).await {
@@ -284,16 +325,16 @@ impl MitosTerminalApp {
                         });
                     }
 
-                    // 3. Handle Long-Running Task Notifications (mitos-gui)
+                    // 3. Long-Running Task Notifications
                     for block in result.closed_blocks {
                         if let Some(dur) = block.duration {
                             if dur.as_secs() >= 5 {
-                                let title = "MITOS Terminal".to_string();
-                                let body = format!("Command finished in {:.1}s", dur.as_secs_f32());
                                 tokio::spawn(async move {
-                                    let socket = ipc::gui_socket();
-                                    if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket).await {
-                                        let req = IpcRequest::NotifyUser { title, body };
+                                    if let Ok(mut stream) = UnixStream::connect(ipc::gui_socket()).await {
+                                        let req = IpcRequest::NotifyUser { 
+                                            title: "MITOS Terminal".to_string(), 
+                                            body: format!("Command finished in {:.1}s", dur.as_secs_f32()) 
+                                        };
                                         let _ = ipc::ipc_send(&mut stream, &req).await;
                                     }
                                 });
@@ -303,13 +344,57 @@ impl MitosTerminalApp {
                 }
             });
         });
+    }
 
-        Self { grid, input_tx: tx }
+    fn handle_semantic_clipboard(&self) {
+        let grid = self.grid.lock().unwrap();
+        if let Some(row) = grid.current_block.cells.get(grid.cursor_y) {
+            let line: String = row.iter().map(|c| c.character).collect();
+            
+            let mut start = grid.cursor_x;
+            let mut end = grid.cursor_x;
+            let chars: Vec<char> = line.chars().collect();
+            
+            while start > 0 && !chars[start-1].is_whitespace() && chars[start-1] != '\0' { start -= 1; }
+            while end < chars.len() && !chars[end].is_whitespace() && chars[end] != '\0' { end += 1; }
+            
+            let word: String = chars[start..end].iter().collect();
+            let path = Path::new(&word);
+            
+            if path.exists() {
+                if let Ok(mut clipboard) = Clipboard::new() {
+                    if let Ok(abs_path) = std::fs::canonicalize(path) {
+                        let uri = format!("file://{}", abs_path.display());
+                        let _ = clipboard.set_text(uri);
+                        eprintln!("[mitos-terminal] Copied URI to clipboard: {}", uri);
+                    }
+                }
+            }
+        }
     }
 }
 
 impl eframe::App for MitosTerminalApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Window Resize Handling
+        let font_id = egui::TextStyle::Monospace.resolve(ctx.style());
+        let char_size = ctx.graphics(|gfx| {
+            gfx.layout_no_wrap("M".to_string(), font_id, egui::Color32::WHITE).size()
+        });
+        
+        let screen_rect = ctx.screen_rect();
+        let new_cols = ((screen_rect.width() - 32.0) / char_size.x).max(10.0) as u16;
+        let new_rows = ((screen_rect.height() - 64.0) / char_size.y).max(5.0) as u16;
+
+        if new_cols != self.last_cols || new_rows != self.last_rows {
+            self.last_cols = new_cols;
+            self.last_rows = new_rows;
+            
+            let _ = self.resize_tx.send((new_cols, new_rows));
+            if let Ok(mut g) = self.grid.lock() { g.cols = new_cols as usize; }
+        }
+
+        // UI Rendering
         egui::CentralPanel::default().show(ctx, |ui| {
             let available_width = ui.available_width();
             let response = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
@@ -337,6 +422,7 @@ impl eframe::App for MitosTerminalApp {
                     );
                 });
 
+            // Input Handling
             if response.has_focus() {
                 ctx.input(|i| {
                     for event in &i.events {
@@ -347,38 +433,9 @@ impl eframe::App for MitosTerminalApp {
                                 }
                             }
                             egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                                // --- SEMANTIC CLIPBOARD (Ctrl+Shift+C) ---
-                                if *key == egui::Key::C && pressed && modifiers.ctrl && modifiers.shift {
-                                    let grid = self.grid.lock().unwrap();
-                                    if let Some(row) = grid.current_block.cells.get(grid.cursor_y) {
-                                        let line: String = row.iter().map(|c| c.character).collect();
-                                        
-                                        // Extract word under cursor
-                                        let mut start = grid.cursor_x;
-                                        let mut end = grid.cursor_x;
-                                        let chars: Vec<char> = line.chars().collect();
-                                        
-                                        while start > 0 && !chars[start-1].is_whitespace() && chars[start-1] != '\0' { 
-                                            start -= 1; 
-                                        }
-                                        while end < chars.len() && !chars[end].is_whitespace() && chars[end] != '\0' { 
-                                            end += 1; 
-                                        }
-                                        
-                                        let word: String = chars[start..end].iter().collect();
-                                        let path = std::path::Path::new(&word);
-                                        
-                                        if path.exists() {
-                                            if let Ok(mut clipboard) = Clipboard::new() {
-                                                if let Ok(abs_path) = std::fs::canonicalize(path) {
-                                                    let uri = format!("file://{}", abs_path.display());
-                                                    let _ = clipboard.set_text(uri);
-                                                    eprintln!("[mitos-terminal] Copied URI to clipboard: {}", uri);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    continue; // Don't send Ctrl+Shift+C to the PTY
+                                if *key == egui::Key::C && modifiers.ctrl && modifiers.shift {
+                                    self.handle_semantic_clipboard();
+                                    continue;
                                 }
 
                                 match key {
@@ -401,6 +458,10 @@ impl eframe::App for MitosTerminalApp {
         ctx.request_repaint();
     }
 }
+
+// ============================================================================
+// UI RENDERING HELPERS
+// ============================================================================
 
 fn render_block(
     ui: &mut egui::Ui,
@@ -451,7 +512,7 @@ fn render_block(
 
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(space_width, line_height), egui::Sense::hover());
 
-                        if is_cursor || cell.bg != [20, 20, 25] {
+                        if is_cursor || cell.bg != DEFAULT_BG {
                             ui.painter().rect_filled(rect, 0.0, bg);
                         }
 
@@ -493,10 +554,10 @@ fn render_widget(ui: &mut egui::Ui, widget: &RichWidget, input_tx: &mpsc::Sender
                 }
             }
         }
-        RichWidget::Progress { percent, color: _ } => {
+        RichWidget::Progress { percent, .. } => {
             ui.add(egui::ProgressBar::new(*percent).show_percentage());
         }
-        RichWidget::Sparkline { data: _ } => {
+        RichWidget::Sparkline { .. } => {
             ui.label("📈 [Sparkline Graph]");
         }
     }
