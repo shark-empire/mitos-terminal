@@ -6,11 +6,8 @@ use eframe::egui;
 use std::sync::{Arc, Mutex};
 use std::io::{Read, Write};
 use tokio::sync::mpsc;
-use portable_pty::MasterPty;
-use grid::{TerminalGrid, ExecutionBlock};
+use grid::{TerminalGrid, ExecutionBlock, ProcessResult};
 use pty::MitosPty;
-
-// Import shared IPC primitives and the RichWidget type from mitos-utils
 use mitos_utils::ipc::{self, RichWidget, IpcRequest, IpcResponse};
 
 struct MitosTerminalApp {
@@ -18,22 +15,16 @@ struct MitosTerminalApp {
     input_tx: mpsc::Sender<u8>,
 }
 
-// ------------------------------------------------------------------
-// IPC SERVER: Lets mitos-system-monitor scrape buffers & inject widgets
-// ------------------------------------------------------------------
 fn spawn_ipc_server(grid: Arc<Mutex<TerminalGrid>>) {
     let socket_path = ipc::terminal_socket(std::process::id());
-    let _ = std::fs::remove_file(&socket_path); // Clear stale socket from a crashed run
+    let _ = std::fs::remove_file(&socket_path); 
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("ipc runtime");
         rt.block_on(async move {
             let listener = match tokio::net::UnixListener::bind(&socket_path) {
                 Ok(l) => l,
-                Err(e) => {
-                    eprintln!("[mitos-terminal] IPC bind failed: {e}");
-                    return;
-                }
+                Err(e) => { eprintln!("[mitos-terminal] IPC bind failed: {e}"); return; }
             };
             eprintln!("[mitos-terminal] IPC listening on {socket_path}");
 
@@ -44,7 +35,6 @@ fn spawn_ipc_server(grid: Arc<Mutex<TerminalGrid>>) {
                 };
                 let grid = Arc::clone(&grid);
                 
-                // Spawn a task for each incoming connection
                 tokio::spawn(async move {
                     while let Ok(Some(req)) = ipc::ipc_recv::<IpcRequest>(&mut stream).await {
                         let resp = match req {
@@ -61,28 +51,107 @@ fn spawn_ipc_server(grid: Arc<Mutex<TerminalGrid>>) {
                                 IpcResponse::Ack
                             }
                             IpcRequest::ThemeChanged { bg, fg } => {
-                                // NOTE: assumes bg/fg are [u8; 3] RGB triples,
-                                // matching the convention every color in this
-                                // codebase already uses (Cell::fg/bg,
-                                // TerminalGrid's current_fg/bg). If mitos-utils
-                                // actually declares these some other way, this
-                                // is a one-line type fix, not a redesign.
-                                grid.lock().unwrap().apply_theme(fg, bg);
+                                grid.lock().unwrap().apply_theme(fg, bg, [85, 255, 85]); // Fallback prompt color
                                 IpcResponse::Ack
                             }
                             IpcRequest::AutoCompletePath { partial_path: _ } => {
-                                // TODO: Implement ghost text autocomplete
                                 IpcResponse::AutoCompleteResult { suggestions: vec![] }
                             }
                         };
                         
-                        if ipc::ipc_send(&mut stream, &resp).await.is_err() {
-                            break;
-                        }
+                        if ipc::ipc_send(&mut stream, &resp).await.is_err() { break; }
                     }
                 });
             }
         });
+    });
+}
+
+fn parse_home_conf(content: &str) -> (Option<String>, Option<String>) {
+    let mut theme_mode = None;
+    let mut accent_color = None;
+    
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.splitn(2, '=');
+        let key = parts.next().map(|s| s.trim());
+        let val = parts.next().map(|s| s.trim());
+        
+        match key {
+            Some("theme_mode") => theme_mode = val.map(String::from),
+            Some("accent_color") => accent_color = val.map(String::from),
+            _ => {}
+        }
+    }
+    (theme_mode, accent_color)
+}
+
+fn apply_home_conf_theme(grid: &Arc<Mutex<TerminalGrid>>, content: &str) {
+    let (theme_mode, accent_color) = parse_home_conf(content);
+    
+    // Map theme_mode to actual RGB values
+    let (fg, bg) = match theme_mode.as_deref() {
+        Some("light") => ([30, 30, 30], [245, 245, 245]),
+        _ => ([200, 200, 200], [20, 20, 25]), // Default MITOS Dark
+    };
+    
+    let prompt = parse_color(accent_color.as_deref(), [85, 255, 85]);
+    
+    grid.lock().unwrap().apply_theme(fg, bg, prompt);
+}
+
+fn parse_color(s: Option<&str>, default: [u8; 3]) -> [u8; 3] {
+    let Some(s) = s else { return default; };
+    let s = s.trim().trim_start_matches('#');
+    if s.len() == 6 {
+        let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(default[0]);
+        let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(default[1]);
+        let b = u8::from_str_radix(&s[4..6], 16).unwrap_or(default[2]);
+        return [r, g, b];
+    }
+    default
+}
+
+fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>) {
+    let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from(".config"));
+    let config_path = config_dir.join("mitos").join("home.conf"); // Fixed typo here!
+    
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    std::thread::spawn(move || {
+        use notify::{Watcher, RecursiveMode, Config, RecommendedWatcher};
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let mut watcher = RecommendedWatcher::new(move |res| {
+            let _ = tx.send(res);
+        }, Config::default()).expect("Failed to create file watcher");
+
+        // Initial load
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            apply_home_conf_theme(&grid, &content);
+        }
+
+        // Watch the parent directory (~/.config/mitos/) so we catch atomic renames
+        // (temp file + rename) used by mitos-settings.
+        let watch_dir = config_path.parent().unwrap().to_path_buf();
+        let _ = watcher.watch(&watch_dir, RecursiveMode::NonRecursive);
+
+        for res in rx {
+            if let Ok(event) = res {
+                // Check if the event involves home.conf
+                let is_home_conf = event.paths.iter().any(|p| p.file_name() == Some(std::ffi::OsStr::new("home.conf")));
+                if is_home_conf {
+                    if let Ok(content) = std::fs::read_to_string(&config_path) {
+                        apply_home_conf_theme(&grid, &content);
+                    }
+                }
+            }
+        }
     });
 }
 
@@ -94,30 +163,25 @@ impl MitosTerminalApp {
         let grid = Arc::new(Mutex::new(TerminalGrid::new(80, 24)));
         let ui_grid = Arc::clone(&grid);
 
-        // 1. Start the IPC Server for System Monitor integration
         spawn_ipc_server(Arc::clone(&grid));
+        spawn_settings_watcher(Arc::clone(&grid)); 
 
-        // Background Thread: PTY Reader/Writer
         std::thread::spawn(move || {
             let pty = MitosPty::new(80, 24).expect("Failed to create PTY");
             let mut reader = pty.master.try_clone_reader().unwrap();
             let mut writer = pty.master.take_writer();
 
-            // Reader Loop
             std::thread::spawn(move || {
                 let mut buf = [0; 1024];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
-                        Ok(n) => {
-                            let _ = pty_tx.blocking_send(buf[..n].to_vec());
-                        }
+                        Ok(n) => { let _ = pty_tx.blocking_send(buf[..n].to_vec()); }
                         Err(_) => break,
                     }
                 }
             });
 
-            // Writer Loop (Async)
             tokio::runtime::Runtime::new().unwrap().block_on(async {
                 while let Some(byte) = rx.recv().await {
                     let _ = writer.write_all(&[byte]);
@@ -125,23 +189,16 @@ impl MitosTerminalApp {
             });
         });
 
-        // Grid Update Loop
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 while let Some(bytes) = pty_rx.recv().await {
-                    let missing_commands = {
+                    let result = {
                         let Ok(mut g) = ui_grid.lock() else { continue };
                         g.process(&bytes)
                     };
 
-                    // mitos-pkgd lookups are blocking I/O (see
-                    // pkg_bridge.rs) — spawn_blocking runs them on
-                    // tokio's dedicated blocking-thread-pool instead of
-                    // an async worker thread, so a slow/unreachable
-                    // daemon never stalls PTY output processing for
-                    // everything else happening on this runtime.
-                    for cmd in missing_commands {
+                    for cmd in result.missing_commands {
                         let grid_for_lookup = Arc::clone(&ui_grid);
                         tokio::task::spawn_blocking(move || {
                             if let Some(widget) = pkg_bridge::suggest_install(&cmd) {
@@ -151,14 +208,30 @@ impl MitosTerminalApp {
                             }
                         });
                     }
+
+                    if let Some(partial) = result.autocomplete_request {
+                        let grid_for_ac = Arc::clone(&ui_grid);
+                        tokio::spawn(async move {
+                            let socket_path = mitos_utils::ipc::file_manager_socket();
+                            if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
+                                let req = IpcRequest::AutoCompletePath { partial_path: partial };
+                                if ipc::ipc_send(&mut stream, &req).await.is_ok() {
+                                    if let Ok(Some(IpcResponse::AutoCompleteResult { suggestions })) = ipc::ipc_recv::<IpcResponse>(&mut stream).await {
+                                        if let Some(first) = suggestions.into_iter().next() {
+                                            if let Ok(mut g) = grid_for_ac.lock() {
+                                                g.set_ghost_text(Some(first));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
             });
         });
 
-        Self {
-            grid,
-            input_tx: tx,
-        }
+        Self { grid, input_tx: tx }
     }
 }
 
@@ -166,8 +239,6 @@ impl eframe::App for MitosTerminalApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let available_width = ui.available_width();
-
-            // Full-screen invisible rect to capture focus and keyboard events globally
             let response = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
             response.request_focus();
 
@@ -175,13 +246,12 @@ impl eframe::App for MitosTerminalApp {
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     let grid = self.grid.lock().unwrap();
+                    let prompt_color = grid.prompt_color; // Grab prompt color before borrowing
 
-                    // Render Historical Blocks (Completed Commands)
                     for block in &grid.blocks {
-                        render_block(ui, block, available_width, &self.input_tx, false, 0, 0);
+                        render_block(ui, block, available_width, &self.input_tx, false, 0, 0, prompt_color);
                     }
 
-                    // Render Current Active Block (Live Command)
                     render_block(
                         ui,
                         &grid.current_block,
@@ -190,10 +260,10 @@ impl eframe::App for MitosTerminalApp {
                         true,
                         grid.cursor_y,
                         grid.cursor_x,
+                        prompt_color,
                     );
                 });
 
-            // Keyboard Input Handling
             if response.has_focus() {
                 ctx.input(|i| {
                     for event in &i.events {
@@ -203,38 +273,14 @@ impl eframe::App for MitosTerminalApp {
                                     let _ = self.input_tx.try_send(c as u8);
                                 }
                             }
-                            egui::Event::Key {
-                                key, pressed: true, ..
-                            } => match key {
-                                egui::Key::Enter => {
-                                    let _ = self.input_tx.try_send(0x0D);
-                                }
-                                egui::Key::Backspace => {
-                                    let _ = self.input_tx.try_send(0x08);
-                                }
-                                egui::Key::Escape => {
-                                    let _ = self.input_tx.try_send(0x1B);
-                                }
-                                egui::Key::ArrowUp => {
-                                    for b in [27, 91, 65] {
-                                        let _ = self.input_tx.try_send(b);
-                                    }
-                                }
-                                egui::Key::ArrowDown => {
-                                    for b in [27, 91, 66] {
-                                        let _ = self.input_tx.try_send(b);
-                                    }
-                                }
-                                egui::Key::ArrowRight => {
-                                    for b in [27, 91, 67] {
-                                        let _ = self.input_tx.try_send(b);
-                                    }
-                                }
-                                egui::Key::ArrowLeft => {
-                                    for b in [27, 91, 68] {
-                                        let _ = self.input_tx.try_send(b);
-                                    }
-                                }
+                            egui::Event::Key { key, pressed: true, .. } => match key {
+                                egui::Key::Enter => { let _ = self.input_tx.try_send(0x0D); }
+                                egui::Key::Backspace => { let _ = self.input_tx.try_send(0x08); }
+                                egui::Key::Escape => { let _ = self.input_tx.try_send(0x1B); }
+                                egui::Key::ArrowUp => { for b in [27, 91, 65] { let _ = self.input_tx.try_send(b); } }
+                                egui::Key::ArrowDown => { for b in [27, 91, 66] { let _ = self.input_tx.try_send(b); } }
+                                egui::Key::ArrowRight => { for b in [27, 91, 67] { let _ = self.input_tx.try_send(b); } }
+                                egui::Key::ArrowLeft => { for b in [27, 91, 68] { let _ = self.input_tx.try_send(b); } }
                                 _ => {}
                             },
                             _ => {}
@@ -243,15 +289,9 @@ impl eframe::App for MitosTerminalApp {
                 });
             }
         });
-
-        // Force continuous redraws
         ctx.request_repaint();
     }
 }
-
-// ------------------------------------------------------------------
-// UI Rendering Helpers
-// ------------------------------------------------------------------
 
 fn render_block(
     ui: &mut egui::Ui,
@@ -261,6 +301,7 @@ fn render_block(
     is_active: bool,
     cursor_y: usize,
     cursor_x: usize,
+    prompt_color: [u8; 3],
 ) {
     egui::Frame::new()
         .fill(egui::Color32::from_gray(22))
@@ -270,21 +311,17 @@ fn render_block(
         .show(ui, |ui| {
             ui.set_width(available_width - 16.0);
 
-            // 1. Render Prompt
+            // Apply the accent color from home.conf to the prompt!
             ui.label(
                 egui::RichText::new(&block.prompt)
-                    .color(egui::Color32::from_rgb(85, 255, 85))
+                    .color(egui::Color32::from_rgb(prompt_color[0], prompt_color[1], prompt_color[2]))
                     .strong()
                     .monospace(),
             );
             ui.add_space(4.0);
 
-            // 2. Render Cells & Widgets
             let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-            let char_size = ui
-                .painter()
-                .layout_no_wrap("M".to_string(), font_id.clone(), egui::Color32::WHITE)
-                .size();
+            let char_size = ui.painter().layout_no_wrap("M".to_string(), font_id.clone(), egui::Color32::WHITE).size();
             let space_width = char_size.x;
             let line_height = char_size.y;
 
@@ -293,32 +330,23 @@ fn render_block(
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
                     for (x, cell) in row.iter().enumerate() {
-                        // Check for MROP Widget at this exact coordinate
                         if let Some(widget) = block.widgets.get(&(y, x)) {
                             render_widget(ui, widget, input_tx);
                             continue;
                         }
 
                         let is_cursor = is_active && x == cursor_x && y == cursor_y;
-
                         let mut fg = egui::Color32::from_rgb(cell.fg[0], cell.fg[1], cell.fg[2]);
                         let mut bg = egui::Color32::from_rgb(cell.bg[0], cell.bg[1], cell.bg[2]);
 
-                        // Invert colors for the cursor block
-                        if is_cursor {
-                            std::mem::swap(&mut fg, &mut bg);
-                        }
+                        if is_cursor { std::mem::swap(&mut fg, &mut bg); }
 
-                        // Allocate exact space for monospace alignment
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(space_width, line_height), egui::Sense::hover());
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(space_width, line_height), egui::Sense::hover());
 
-                        // Draw background if it's the cursor or ANSI changed the background color
                         if is_cursor || cell.bg != [20, 20, 25] {
                             ui.painter().rect_filled(rect, 0.0, bg);
                         }
 
-                        // Draw the character
                         if cell.character != ' ' && cell.character != '\0' {
                             ui.painter().text(
                                 rect.center(),
@@ -329,10 +357,22 @@ fn render_block(
                             );
                         }
                     }
+                    
+                    if is_active && y == cursor_y {
+                        if let Some(ghost) = &block.ghost_text {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(ghost)
+                                        .color(egui::Color32::from_gray(80))
+                                        .monospace()
+                                ).selectable(false)
+                            );
+                        }
+                    }
                 });
             }
         });
-    ui.add_space(8.0); // Gap between cards
+    ui.add_space(8.0); 
 }
 
 fn render_widget(ui: &mut egui::Ui, widget: &RichWidget, input_tx: &mpsc::Sender<u8>) {
@@ -355,6 +395,10 @@ fn render_widget(ui: &mut egui::Ui, widget: &RichWidget, input_tx: &mpsc::Sender
 }
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().any(|arg| arg == "--tty") {
+        eprintln!("[mitos-terminal] TTY recovery mode not yet fully wired to crossterm backend. Starting eframe anyway.");
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
