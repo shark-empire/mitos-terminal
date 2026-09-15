@@ -14,8 +14,8 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             character: ' ',
-            fg: [200, 200, 200], // Default MITOS light grey
-            bg: [20, 20, 25],    // Default MITOS dark background
+            fg: [200, 200, 200], 
+            bg: [20, 20, 25],    
         }
     }
 }
@@ -26,7 +26,7 @@ pub struct ExecutionBlock {
     pub widgets: HashMap<(usize, usize), RichWidget>, 
     pub is_active: bool, 
     pub start_time: std::time::Instant,
-    pub ghost_text: Option<String>, // New: For mitos-file-manager ghost prompts
+    pub ghost_text: Option<String>, 
 }
 
 impl ExecutionBlock {
@@ -62,9 +62,10 @@ pub struct TerminalGrid {
     current_bg: [u8; 3],
     default_fg: [u8; 3],
     default_bg: [u8; 3],
+    pub prompt_color: [u8; 3], // New: Track accent color for the prompt
     pending_lookups: Vec<String>,
     already_suggested: HashSet<String>,
-    pending_autocomplete: Option<String>, // New: Shell asks terminal to query file manager
+    pending_autocomplete: Option<String>, 
 }
 
 impl TerminalGrid {
@@ -83,6 +84,7 @@ impl TerminalGrid {
             current_bg: default_bg,
             default_fg,
             default_bg,
+            prompt_color: [85, 255, 85], // Default MITOS Green
             pending_lookups: Vec::new(),
             already_suggested: HashSet::new(),
             pending_autocomplete: None,
@@ -91,13 +93,14 @@ impl TerminalGrid {
 
     /// Fully applies a new theme, retroactively updating all existing cells
     /// that match the old default colors, as well as setting the new defaults.
-    pub fn apply_theme(&mut self, fg: [u8; 3], bg: [u8; 3]) {
+    pub fn apply_theme(&mut self, fg: [u8; 3], bg: [u8; 3], prompt: [u8; 3]) {
         let old_fg = self.default_fg;
         let old_bg = self.default_bg;
         self.default_fg = fg;
         self.default_bg = bg;
         self.current_fg = fg;
         self.current_bg = bg;
+        self.prompt_color = prompt;
         
         // Retroactively repaint existing history
         for block in &mut self.blocks {
@@ -201,7 +204,6 @@ impl Perform for TerminalGrid {
             0x08 => { 
                 if self.cursor_x > 0 { 
                     self.cursor_x -= 1; 
-                    // Clear ghost text if user backspaces
                     if let Some(g) = &mut self.current_block.ghost_text {
                         g.pop();
                         if g.is_empty() { self.current_block.ghost_text = None; }
@@ -214,7 +216,7 @@ impl Perform for TerminalGrid {
                 while self.current_block.cells.len() <= self.cursor_y {
                     self.current_block.add_row(self.cols);
                 }
-                self.current_block.ghost_text = None; // Clear on enter
+                self.current_block.ghost_text = None; 
             }
             0x0D => { 
                 self.cursor_x = 0;
@@ -291,7 +293,6 @@ impl Perform for TerminalGrid {
                 self.cursor_x = 0;
                 self.cursor_y = 0;
             }
-            // New: mitos-shell requests the terminal to query the File Manager for Ghost Text
             else if ps == "MITOS_AUTOCOMPLETE" && params.len() >= 2 {
                 if let Ok(pt) = std::str::from_utf8(params[1]) {
                     self.pending_autocomplete = Some(pt.to_string());
