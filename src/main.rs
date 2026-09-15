@@ -1,5 +1,6 @@
 mod grid;
 mod pty;
+mod pkg_bridge;
 
 use eframe::egui;
 use std::sync::{Arc, Mutex};
@@ -59,8 +60,14 @@ fn spawn_ipc_server(grid: Arc<Mutex<TerminalGrid>>) {
                                 grid.lock().unwrap().inject_widget(widget);
                                 IpcResponse::Ack
                             }
-                            IpcRequest::ThemeChanged { bg: _, fg: _ } => {
-                                // TODO: Apply theme to grid
+                            IpcRequest::ThemeChanged { bg, fg } => {
+                                // NOTE: assumes bg/fg are [u8; 3] RGB triples,
+                                // matching the convention every color in this
+                                // codebase already uses (Cell::fg/bg,
+                                // TerminalGrid's current_fg/bg). If mitos-utils
+                                // actually declares these some other way, this
+                                // is a one-line type fix, not a redesign.
+                                grid.lock().unwrap().apply_theme(fg, bg);
                                 IpcResponse::Ack
                             }
                             IpcRequest::AutoCompletePath { partial_path: _ } => {
@@ -123,8 +130,26 @@ impl MitosTerminalApp {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 while let Some(bytes) = pty_rx.recv().await {
-                    if let Ok(mut g) = ui_grid.lock() {
-                        g.process(&bytes);
+                    let missing_commands = {
+                        let Ok(mut g) = ui_grid.lock() else { continue };
+                        g.process(&bytes)
+                    };
+
+                    // mitos-pkgd lookups are blocking I/O (see
+                    // pkg_bridge.rs) — spawn_blocking runs them on
+                    // tokio's dedicated blocking-thread-pool instead of
+                    // an async worker thread, so a slow/unreachable
+                    // daemon never stalls PTY output processing for
+                    // everything else happening on this runtime.
+                    for cmd in missing_commands {
+                        let grid_for_lookup = Arc::clone(&ui_grid);
+                        tokio::task::spawn_blocking(move || {
+                            if let Some(widget) = pkg_bridge::suggest_install(&cmd) {
+                                if let Ok(mut g) = grid_for_lookup.lock() {
+                                    g.inject_widget(widget);
+                                }
+                            }
+                        });
                     }
                 }
             });
