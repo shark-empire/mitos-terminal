@@ -9,17 +9,21 @@ pub struct Cell {
     pub character: char,
     pub fg: [u8; 3],
     pub bg: [u8; 3],
+    /// 1.0 = freshly printed, cools to 0.0. Drives halo, white-hot core, glitch jitter.
+    pub intensity: f32,
 }
 
 impl Default for Cell {
     fn default() -> Self {
         Self {
             character: ' ',
-            fg: [200, 200, 200], 
-            bg: [20, 20, 25],    
+            fg0)` → old text at 16% opacity | Core: [200, 200, 200],
+            bg: [20, 20, 25],
+            intensity: 0.0,
         }
     }
 }
+
 
 // Added Clone so we can push to both history and the notification queue
 #[derive(Clone)]
@@ -73,6 +77,7 @@ pub struct TerminalGrid {
     already_suggested: HashSet<String>,
     pending_autocomplete: Option<String>, 
     pending_closed_blocks: Vec<ExecutionBlock>, // Added missing field
+    pub any_hot: bool,
 }
 
 impl TerminalGrid {
@@ -96,6 +101,7 @@ impl TerminalGrid {
             already_suggested: HashSet::new(),
             pending_autocomplete: None,
             pending_closed_blocks: Vec::new(), // Initialized here
+            any_hot: false,
         }
     }
 
@@ -165,6 +171,35 @@ impl TerminalGrid {
         out
     }
 
+    /// Call once per frame from main.rs, before painting.
+/// Cools every hot glyph; sleeps entirely when nothing is hot.
+pub fn tick(&mut self, dt: f32) {
+    if !self.any_hot { return; }                 // cold history = zero cost
+    let cool = dt * 2.2;                         // ~0.45 s white-hot → settled
+    let mut still_hot = false;
+    for block in self.blocks.iter_mut().chain(std::iter::once(&mut self.current_block)) {
+        for row in block.cells.iter_mut() {
+            for cell in row.iter_mut() {
+                if cell.intensity > 0.0 {
+                    cell.intensity = (cell.intensity - cool).max(0.0);
+                    still_hot |= cell.intensity > 0.0;
+                }
+            }
+        }
+    }
+    self.any_hot = still_hot;
+}
+
+/// Re-ignite a row for effect beats (error glitch, MROP widget flash).
+pub fn spike_row(&mut self, row: usize) {
+    if let Some(r) = self.current_block.cells.get_mut(row) {
+        for c in r.iter_mut() {
+            if c.character != ' ' { c.intensity = 1.0; }
+        }
+        self.any_hot = true;
+    }
+}
+
     pub fn inject_widget(&mut self, widget: RichWidget) {
         self.cursor_y += 1;
         self.cursor_x = 0;
@@ -185,29 +220,33 @@ impl TerminalGrid {
         if let Some(cmd) = detect_missing_command(line.trim_end()) {
             if self.already_suggested.insert(cmd.clone()) {
                 self.pending_lookups.push(cmd);
+                self.spike_row(self.cursor_y);   // the "command not found" line flares red + jitters
+
             }
         }
     }
 }
 
 impl Perform for TerminalGrid {
-    fn print(&mut self, c: char) {
-        if self.cursor_x >= self.cols {
-            self.cursor_x = 0;
-            self.cursor_y += 1;
-        }
-
-        while self.current_block.cells.len() <= self.cursor_y {
-            self.current_block.add_row(self.cols);
-        }
-
-        self.current_block.cells[self.cursor_y][self.cursor_x] = Cell {
-            character: c,
-            fg: self.current_fg,
-            bg: self.current_bg,
-        };
-        self.cursor_x += 1;
+fn print(&mut self, c: char) {
+    if self.cursor_x >= self.cols {
+        self.cursor_x = 0;
+        self.cursor_y += 1;
     }
+    while self.current_block.cells.len() <= self.cursor_y {
+        self.current_block.add_row(self.cols);
+    }
+
+    self.current_block.cells[self.cursor_y][self.cursor_x] = Cell {
+        character: c,
+        fg: self.current_fg,
+        bg: self.current_bg,
+        intensity: 1.0,          // ← THE SPIKE: this glyph just landed
+    };
+    self.any_hot = true;
+    self.cursor_x += 1;
+}
+
 
     fn execute(&mut self, byte: u8) {
         match byte {
@@ -321,3 +360,14 @@ impl Perform for TerminalGrid {
     
     fn esc_dispatch(&mut self, _: &[u8], _: bool, _: u8) {}
 }
+
+#[inline]
+pub fn hash3(a: u64, b: u64, c: u64) -> u64 {
+    let mut x = a.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ b.wrapping_mul(0x517C_C1B7_2722_0A95)
+        ^ c.wrapping_mul(0x2545_F491_4F6C_DD1D);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
