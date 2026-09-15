@@ -1,6 +1,7 @@
 mod grid;
 mod pty;
 mod pkg_bridge;
+mod fx; // <-- ADDED: Cinematic Background FX
 
 // --- Standard Library ---
 use std::io::{Read, Write};
@@ -36,6 +37,7 @@ struct MitosTerminalApp {
     resize_tx: std::sync::mpsc::Sender<(u16, u16)>,
     last_cols: u16,
     last_rows: u16,
+    last_t: f64, // <-- ADDED: Frame clock for animations
 }
 
 // ============================================================================
@@ -246,6 +248,7 @@ impl MitosTerminalApp {
             resize_tx,
             last_cols: DEFAULT_COLS,
             last_rows: DEFAULT_ROWS,
+            last_t: 0.0, // <-- ADDED
         }
     }
 
@@ -376,6 +379,12 @@ impl MitosTerminalApp {
 
 impl eframe::App for MitosTerminalApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // --- CINEMATIC CLOCK ADDED ---
+        let now = ctx.input(|i| i.time);
+        let dt = (now - self.last_t).clamp(0.0, 0.1) as f32;
+        self.last_t = now;
+        let frame = (now * 20.0) as u64; // 20 Hz clock for glitch jitter
+
         // Window Resize Handling
         let font_id = egui::TextStyle::Monospace.resolve(ctx.style());
         let char_size = ctx.graphics(|gfx| {
@@ -394,67 +403,86 @@ impl eframe::App for MitosTerminalApp {
             if let Ok(mut g) = self.grid.lock() { g.cols = new_cols as usize; }
         }
 
+        // --- TICK GRID DECAY ADDED ---
+        if let Ok(mut g) = self.grid.try_lock() {
+            g.tick(dt);
+        }
+
         // UI Rendering
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let available_width = ui.available_width();
-            let response = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
-            response.request_focus();
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(4, 10, 18))) // Deep Aurora Void
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                let p = ui.painter().with_clip_rect(rect);
 
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    let grid = self.grid.lock().unwrap();
-                    let prompt_color = grid.prompt_color; 
+                // --- BACKGROUND FX ADDED ---
+                fx::paint_grid(&p, rect, now, [0x1E, 0x90, 0xC8]);
+                fx::paint_sweep(&p, rect, now, [0x1E, 0x90, 0xC8]);
 
-                    for block in &grid.blocks {
-                        render_block(ui, block, available_width, &self.input_tx, false, 0, 0, prompt_color);
-                    }
+                let available_width = ui.available_width();
+                let response = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
+                response.request_focus();
 
-                    render_block(
-                        ui,
-                        &grid.current_block,
-                        available_width,
-                        &self.input_tx,
-                        true,
-                        grid.cursor_y,
-                        grid.cursor_x,
-                        prompt_color,
-                    );
-                });
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        let grid = self.grid.lock().unwrap();
+                        let prompt_color = grid.prompt_color; 
 
-            // Input Handling
-            if response.has_focus() {
-                ctx.input(|i| {
-                    for event in &i.events {
-                        match event {
-                            egui::Event::Text(text) => {
-                                for c in text.chars() {
-                                    let _ = self.input_tx.try_send(c as u8);
-                                }
-                            }
-                            egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                                if *key == egui::Key::C && modifiers.ctrl && modifiers.shift {
-                                    self.handle_semantic_clipboard();
-                                    continue;
-                                }
-
-                                match key {
-                                    egui::Key::Enter => { let _ = self.input_tx.try_send(0x0D); }
-                                    egui::Key::Backspace => { let _ = self.input_tx.try_send(0x08); }
-                                    egui::Key::Escape => { let _ = self.input_tx.try_send(0x1B); }
-                                    egui::Key::ArrowUp => { for b in [27, 91, 65] { let _ = self.input_tx.try_send(b); } }
-                                    egui::Key::ArrowDown => { for b in [27, 91, 66] { let _ = self.input_tx.try_send(b); } }
-                                    egui::Key::ArrowRight => { for b in [27, 91, 67] { let _ = self.input_tx.try_send(b); } }
-                                    egui::Key::ArrowLeft => { for b in [27, 91, 68] { let _ = self.input_tx.try_send(b); } }
-                                    _ => {}
-                                }
-                            },
-                            _ => {}
+                        for block in &grid.blocks {
+                            render_block(ui, block, available_width, &self.input_tx, false, 0, 0, prompt_color, now, frame);
                         }
-                    }
-                });
-            }
-        });
+
+                        render_block(
+                            ui,
+                            &grid.current_block,
+                            available_width,
+                            &self.input_tx,
+                            true,
+                            grid.cursor_y,
+                            grid.cursor_x,
+                            prompt_color,
+                            now,
+                            frame,
+                        );
+                    });
+
+                // --- CRT SCANLINES ADDED ---
+                fx::paint_scanlines(&p, rect);
+
+                // Input Handling
+                if response.has_focus() {
+                    ctx.input(|i| {
+                        for event in &i.events {
+                            match event {
+                                egui::Event::Text(text) => {
+                                    for c in text.chars() {
+                                        let _ = self.input_tx.try_send(c as u8);
+                                    }
+                                }
+                                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                                    if *key == egui::Key::C && modifiers.ctrl && modifiers.shift {
+                                        self.handle_semantic_clipboard();
+                                        continue;
+                                    }
+
+                                    match key {
+                                        egui::Key::Enter => { let _ = self.input_tx.try_send(0x0D); }
+                                        egui::Key::Backspace => { let _ = self.input_tx.try_send(0x08); }
+                                        egui::Key::Escape => { let _ = self.input_tx.try_send(0x1B); }
+                                        egui::Key::ArrowUp => { for b in [27, 91, 65] { let _ = self.input_tx.try_send(b); } }
+                                        egui::Key::ArrowDown => { for b in [27, 91, 66] { let _ = self.input_tx.try_send(b); } }
+                                        egui::Key::ArrowRight => { for b in [27, 91, 67] { let _ = self.input_tx.try_send(b); } }
+                                        egui::Key::ArrowLeft => { for b in [27, 91, 68] { let _ = self.input_tx.try_send(b); } }
+                                        _ => {}
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                    });
+                }
+            });
         ctx.request_repaint();
     }
 }
@@ -472,9 +500,11 @@ fn render_block(
     cursor_y: usize,
     cursor_x: usize,
     prompt_color: [u8; 3],
+    now: f64,   // <-- ADDED
+    frame: u64, // <-- ADDED
 ) {
     egui::Frame::new()
-        .fill(egui::Color32::from_gray(22))
+        .fill(egui::Color32::from_rgba_unmultiplied(10, 15, 20, 180)) // Semi-transparent to show grid
         .rounding(6.0)
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(45)))
         .inner_margin(8.0)
@@ -517,12 +547,52 @@ fn render_block(
                         }
 
                         if cell.character != ' ' && cell.character != '\0' {
+                            // --- CINEMATIC TEXT RENDERING ---
+                            let text_rgb = if is_cursor { cell.bg } else { cell.fg };
+                            let t = cell.intensity;
+                            let is_err = text_rgb[0] > 180 && text_rgb[1] < 120 && text_rgb[2] < 120;
+
+                            // 1. GLITCH JITTER
+                            let jx = if is_err && t > 0.05 {
+                                ((grid::hash3(x as u64, y as u64, frame) % 3) as f32 - 1.0) * 1.5
+                            } else { 0.0 };
+
+                            let center = rect.center();
+                            let text_pos = egui::pos2(center.x + jx, center.y);
+
+                            // 2. PHOSPHOR HALO
+                            if t > 0.05 {
+                                let halo = egui::Color32::from_rgba_unmultiplied(
+                                    text_rgb[0], text_rgb[1], text_rgb[2], (t * 90.0) as u8);
+                                let offsets = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]];
+                                for [dx, dy] in offsets {
+                                    ui.painter().text(
+                                        egui::pos2(center.x + dx + jx, center.y + dy),
+                                        egui::Align2::CENTER_CENTER,
+                                        cell.character.to_string(),
+                                        font_id.clone(),
+                                        halo,
+                                    );
+                                }
+                            }
+
+                            // 3. CORE COLOR (white-hot cooling)
+                            let core = if t > 0.0 {
+                                let k = t * 0.85;
+                                egui::Color32::from_rgb(
+                                    (text_rgb[0] as f32 + (255.0 - text_rgb[0] as f32) * k) as u8,
+                                    (text_rgb[1] as f32 + (255.0 - text_rgb[1] as f32) * k) as u8,
+                                    (text_rgb[2] as f32 + (255.0 - text_rgb[2] as f32) * k) as u8)
+                            } else {
+                                fg // This is already swapped if is_cursor
+                            };
+
                             ui.painter().text(
-                                rect.center(),
+                                text_pos,
                                 egui::Align2::CENTER_CENTER,
                                 cell.character.to_string(),
                                 font_id.clone(),
-                                fg,
+                                core,
                             );
                         }
                     }
