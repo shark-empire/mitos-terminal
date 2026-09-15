@@ -14,3 +14,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # later: mitos-utils = { path = "../mitos-utils" }
 mitos-utils = { git = "https://github.com/shark-empire/mitos-utils" }
+# For the "command not found -> install" bridge in pkg_bridge.rs —
+# links mitos-pkgd's own DaemonClient rather than reimplementing its
+# socket protocol.
+mitos-pkg = { git = "https://github.com/shark-empire/mitos-pkg" }

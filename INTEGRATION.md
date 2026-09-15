@@ -1,3 +1,22 @@
+> ## Implementation status (read this first)
+>
+> Everything below this line was the integration *plan* — most of it
+> wasn't built yet as of when this note was added. Current state:
+>
+> | Integration | Status |
+> |---|---|
+> | `mitos-shell` handoff, `MITOS_TERMINAL_VERSION`/`MITOS_MROP_SUPPORTED` env vars | **Done** — `pty.rs` now checks `$PATH` for `mitos-shell` and falls back to `sh` if it isn't installed yet. |
+> | MROP widget rendering (`OSC_WIDGET`) + block finalization (`OSC_NEW_BLOCK`) | **Done** — was already real when this note was added, ahead of the rest of this document. `grid.rs`'s `osc_dispatch`. |
+> | `mitos-system-monitor` buffer scraping + widget injection over the IPC socket | **Done** — `main.rs`'s `spawn_ipc_server`, `GetTerminalBuffer`/`InjectWidget`. |
+> | `mitos-pkg` "command not found" install button | **Done, but from the terminal's side, not `mitos-shell`'s.** The terminal itself now watches PTY output for a "not found"-shaped line and queries `mitos-pkgd` directly (`pkg_bridge.rs`) — it doesn't wait for `mitos-shell` to emit an MROP button for this specific case. Works today even with plain `sh` running. |
+> | `mitos-settings` theme sync | **Half done.** `ThemeChanged` over IPC now actually recolors the grid (`TerminalGrid::apply_theme`) instead of being a no-op — but nothing calls it yet, since that requires `mitos-settings` itself to connect to this socket and send it, which is outside this repo. Also: only affects new output, not text already on screen (see `apply_theme`'s doc comment for why). |
+> | `mitos-file-manager` ghost prompts / semantic clipboard | **Not done.** `AutoCompletePath` is still a stub. Needs `mitos-file-manager`'s actual IPC protocol, which isn't available to build against yet. |
+> | `mitos-gui` global hotkeys / notifications | **Not done.** Needs `mitos-gui`'s actual compositor-level API for this, which isn't available yet either. |
+> | `mitos-network` captive portal / bandwidth widgets | **Not done.** Same reason — no `mitos-network` protocol to build against. |
+> | `mitos-kernel` TTY fallback | **Not buildable as described.** This app renders via `eframe`/`egui` (OpenGL) — it fundamentally cannot run on a raw text-mode Linux virtual console with no display server. A real recovery-TTY fallback would need a genuinely separate, text-mode-only implementation, not a mode of this one. Worth flagging now rather than treating it as "just not wired up yet."
+
+---
+
 🔌 3. Integration Points with MITOS
 To fully integrate this into your  mitos/  ecosystem, you should implement the following bridges:
 	1.	 mitos-settings  Integration:
