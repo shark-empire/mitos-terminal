@@ -1,0 +1,3 @@
+
+### 💡 Pro-Tip for your GitHub Repo:
+Terminal emulators live and die by their screenshots! Take a screenshot of your terminal with the **Matrix Rain** turned on, maybe run `neofetch` or `ls --color` so the phosphor glow and colors pop, and save it as `screenshot.png` in your repo. Then uncomment the `![MITOS Terminal]` image tag at the top of the README. It will make your project look incredibly professional to anyone visiting the GitHub page!
