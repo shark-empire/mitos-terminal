@@ -7,6 +7,8 @@ mod fx;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
 
 // --- Third-Party ---
 use arboard::Clipboard; 
@@ -53,6 +55,8 @@ struct MitosTerminalApp {
     search_active: bool,
     search_query: String,
     rain: fx::CodeRain,
+    rain_enabled: Arc<AtomicBool>,
+    show_settings: bool,
 }
 
 // ============================================================================
@@ -182,6 +186,12 @@ fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>) {
                 if is_home_conf {
                     if let Ok(content) = std::fs::read_to_string(&config_path) {
                         apply_home_conf_theme(&grid, &content);
+
+                         for line in content.lines() {
+                            if let Some(val) = line.strip_prefix("matrix_rain=") {
+                                rain_enabled.store(val.trim() == "true" || val.trim() == "1", Ordering::Relaxed);
+                            }
+                        }
                     }
                 }
             }
@@ -304,9 +314,19 @@ impl MitosTerminalApp {
 
         // FIX: Cast u16 constants to usize
         let grid = Arc::new(Mutex::new(TerminalGrid::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize)));
-        
+
+        let rain_enabled = Arc::new(AtomicBool::new(true));
+        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
+        let config_path = config_dir.join("mitos").join("home.conf");
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            for line in content.lines() {
+                if let Some(val) = line.strip_prefix("matrix_rain=") {
+                    rain_enabled.store(val.trim() == "true" || val.trim() == "1", Ordering::Relaxed);
+                }
+            }
+        }
         spawn_ipc_server(Arc::clone(&grid));
-        spawn_settings_watcher(Arc::clone(&grid)); 
+        spawn_settings_watcher(Arc::clone(&grid), Arc::clone(&rain_enabled)); 
         spawn_network_poller(Arc::clone(&grid));
 
         Self::spawn_pty_handler(pty_tx, input_rx, resize_rx);
@@ -323,6 +343,8 @@ impl MitosTerminalApp {
             search_active: false,
             search_query: String::new(),
             rain: fx::CodeRain::new(10.0, 0.55),
+            rain_enabled,
+            show_settings: false,
         }
     }
 
@@ -450,6 +472,37 @@ impl MitosTerminalApp {
 
 impl eframe::App for MitosTerminalApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Comma) && i.modifiers.ctrl) {
+            self.show_settings = !self.show_settings;
+        }
+        egui::Area::new(egui::Id::new("settings_btn_area"))
+            .fixed_pos(egui::Pos2::new(ctx.screen_rect().right() - 40.0, ctx.screen_rect().top() + 10.0))
+            .show(ctx, |ui| {
+                if ui.button("⚙️").on_hover_text("Settings (Ctrl+,)").clicked() {
+                    self.show_settings = !self.show_settings;
+                }
+            });
+
+        // --- NEW: Settings Window ---
+        if self.show_settings {
+            egui::Window::new("⚙️ MITOS Settings")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.heading("Visual Effects");
+                    ui.separator();
+                    
+                    let mut is_rain_on = self.rain_enabled.load(Ordering::Relaxed);
+                    if ui.checkbox(&mut is_rain_on, "Matrix Code Rain").changed() {
+                        self.rain_enabled.store(is_rain_on, Ordering::Relaxed);
+                        save_matrix_rain_setting(is_rain_on);
+                    }
+                    
+                    ui.add_space(10.0);
+                    ui.label("Changes are saved automatically to ~/.config/mitos/home.conf");
+                });
+        }
         let now = ctx.input(|i| i.time);
         let dt = (now - self.last_t).clamp(0.0, 0.1) as f32;
         self.last_t = now;
@@ -482,7 +535,9 @@ impl eframe::App for MitosTerminalApp {
         });
         
         let screen_rect = ctx.screen_rect();
-        self.rain.tick(dt, screen_rect); // <-- ADD THIS
+                if self.rain_enabled.load(Ordering::Relaxed) {
+            self.rain.tick(dt, screen_rect);
+        }
         let new_cols = ((screen_rect.width() - 32.0) / char_size.x).max(10.0) as u16;
         let new_rows = ((screen_rect.height() - 64.0) / char_size.y).max(5.0) as u16;
 
@@ -507,10 +562,15 @@ impl eframe::App for MitosTerminalApp {
                 let rect = ui.max_rect();
                 let p = ui.painter().with_clip_rect(rect);
 
-                // Paint order = depth order: rain behind grid, grid behind sweep
-                self.rain.paint(&p, rect, now, MATRIX_GREEN);
+                // --- NEW: Only paint rain if enabled ---
+                if self.rain_enabled.load(Ordering::Relaxed) {
+                    self.rain.paint(&p, rect, now, MATRIX_GREEN);
+                }
+                // ---------------------------------------
+                
                 fx::paint_grid(&p, rect, now, MATRIX_GREEN);
                 fx::paint_sweep(&p, rect, now, MATRIX_GREEN);
+
 
 
                 let available_width = ui.available_width();
@@ -853,3 +913,34 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| Ok(Box::new(MitosTerminalApp::new(cc)))),
     )
 }
+
+fn save_matrix_rain_setting(enabled: bool) {
+    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
+    let config_path = config_dir.join("mitos").join("home.conf");
+    let _ = std::fs::create_dir_all(&config_dir);
+
+    let val = if enabled { "true" } else { "false" };
+    let mut content = std::fs::read_to_string(&config_path).unwrap_or_default();
+
+    let mut found = false;
+    let lines: Vec<String> = content.lines().map(|l| {
+        if l.starts_with("matrix_rain=") {
+            found = true;
+            format!("matrix_rain={}", val)
+        } else {
+            l.to_string()
+        }
+    }).collect();
+
+    if found {
+        content = lines.join("\n");
+    } else {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(&format!("matrix_rain={}\n", val));
+    }
+
+    let _ = std::fs::write(&config_path, content);
+}
+
