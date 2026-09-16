@@ -400,8 +400,11 @@ impl eframe::App for MitosTerminalApp {
             self.last_rows = new_rows;
             
             let _ = self.resize_tx.send((new_cols, new_rows));
-            if let Ok(mut g) = self.grid.lock() { g.cols = new_cols as usize; }
+            if let Ok(mut g) = self.grid.lock() { 
+                g.resize(new_cols as usize); // <-- REPLACE `g.cols = ...` WITH THIS
+            }
         }
+
 
         // --- TICK GRID DECAY ADDED ---
         if let Ok(mut g) = self.grid.try_lock() {
@@ -555,7 +558,7 @@ fn render_block(
                             // --- CINEMATIC TEXT RENDERING ---
                             let text_rgb = if is_cursor { cell.bg } else { cell.fg };
                             let t = cell.intensity;
-                            let is_err = text_rgb[0] > 180 && text_rgb[1] < 120 && text_rgb[2] < 120;
+                            let is_err = cell.is_error; 
 
                             // 1. GLITCH JITTER
                             let jx = if is_err && t > 0.05 {
