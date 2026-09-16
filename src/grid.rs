@@ -11,6 +11,7 @@ pub struct Cell {
     pub bg: [u8; 3],
     /// 1.0 = freshly printed, cools to 0.0. Drives halo, white-hot core, glitch jitter.
     pub intensity: f32,
+    pub is_error: bool,
 }
 
 impl Default for Cell {
@@ -20,6 +21,7 @@ impl Default for Cell {
             fg: [200, 200, 200],
             bg: [20, 20, 25],
             intensity: 0.0,
+            is_error: false,
         }
     }
 }
@@ -189,10 +191,13 @@ impl TerminalGrid {
     }
 
     /// Re-ignite a row for effect beats (error glitch, MROP widget flash).
-    pub fn spike_row(&mut self, row: usize) {
+    pub fn spike_row_error(&mut self, row: usize) {
         if let Some(r) = self.current_block.cells.get_mut(row) {
             for c in r.iter_mut() {
-                if c.character != ' ' { c.intensity = 1.0; }
+                if c.character != ' ' { 
+                    c.intensity = 1.0; 
+                    c.is_error = true; // <-- ADD THIS
+                }
             }
             self.any_hot = true;
         }
@@ -218,7 +223,7 @@ impl TerminalGrid {
         if let Some(cmd) = detect_missing_command(line.trim_end()) {
             if self.already_suggested.insert(cmd.clone()) {
                 self.pending_lookups.push(cmd);
-                self.spike_row(self.cursor_y);   // the "command not found" line flares red + jitters
+                self.spike_row_error(self.cursor_y);   // the "command not found" line flares red + jitters
             }
         }
     }
@@ -239,6 +244,7 @@ impl Perform for TerminalGrid {
             fg: self.current_fg,
             bg: self.current_bg,
             intensity: 1.0,          // ← THE SPIKE: this glyph just landed
+            is_error: false,
         };
         self.any_hot = true;
         self.cursor_x += 1;
