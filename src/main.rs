@@ -159,7 +159,7 @@ fn inject_captive_portal_widget(grid: &Arc<Mutex<TerminalGrid>>) {
 // SETTINGS & THEME SYNC
 // ============================================================================
 
-fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>) {
+fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>, rain_enabled: Arc<AtomicBool>) {
     let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
     let config_path = config_dir.join("mitos").join("home.conf");
     
@@ -173,8 +173,15 @@ fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>) {
             let _ = tx.send(res);
         }, Config::default()).expect("Failed to create file watcher");
 
+        // Parse settings on startup
         if let Ok(content) = std::fs::read_to_string(&config_path) {
             apply_home_conf_theme(&grid, &content);
+            
+            for line in content.lines() {
+                if let Some(val) = line.strip_prefix("matrix_rain=") {
+                    rain_enabled.store(val.trim() == "true" || val.trim() == "1", Ordering::Relaxed);
+                }
+            }
         }
 
         let watch_dir = config_path.parent().unwrap().to_path_buf();
@@ -186,8 +193,9 @@ fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>) {
                 if is_home_conf {
                     if let Ok(content) = std::fs::read_to_string(&config_path) {
                         apply_home_conf_theme(&grid, &content);
-
-                         for line in content.lines() {
+                        
+                        // Update settings when the file changes externally
+                        for line in content.lines() {
                             if let Some(val) = line.strip_prefix("matrix_rain=") {
                                 rain_enabled.store(val.trim() == "true" || val.trim() == "1", Ordering::Relaxed);
                             }
@@ -198,6 +206,7 @@ fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>) {
         }
     });
 }
+
 
 fn apply_home_conf_theme(grid: &Arc<Mutex<TerminalGrid>>, content: &str) {
     let (theme_mode, accent_color) = parse_home_conf(content);
@@ -675,7 +684,7 @@ fn render_block(
     cursor_y: usize,
     cursor_x: usize,
     prompt_color: [u8; 3],
-    now: f64,
+    _now: f64,
     frame: u64,
     search_query: &str,
     selection: &mut Option<Selection>,
