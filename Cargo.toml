@@ -22,3 +22,4 @@ mitos-pkg = { git = "https://github.com/shark-empire/mitos-pkg" }
 notify = "6.1"          # Hot-reloading terminal.toml
 dirs = "5.0"            # Resolving ~/.config/mitos
 arboard = "3.4"         
+open = "5.0"
