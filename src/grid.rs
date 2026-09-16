@@ -106,6 +106,73 @@ impl TerminalGrid {
         }
     }
 
+        pub fn resize(&mut self, new_cols: usize) {
+        if new_cols == self.cols { return; }
+        
+        for block in &mut self.blocks {
+            Self::reflow_block(block, new_cols);
+        }
+        Self::reflow_block(&mut self.current_block, new_cols);
+        
+        self.cols = new_cols;
+        
+        // Clamp cursor to prevent out-of-bounds panics
+        self.cursor_y = self.cursor_y.min(self.current_block.cells.len().saturating_sub(1));
+        self.cursor_x = self.cursor_x.min(new_cols.saturating_sub(1));
+    }
+
+    fn reflow_block(block: &mut ExecutionBlock, new_cols: usize) {
+        let old_cols = block.cells.get(0).map(|r| r.len()).unwrap_or(0);
+        let mut flat: Vec<Cell> = Vec::new();
+        
+        // 1. Flatten existing cells, distinguishing wrapped lines from hard newlines
+        for row in &block.cells {
+            let mut end = row.len();
+            // Trim trailing spaces to find actual text end
+            while end > 0 && row[end-1].character == ' ' {
+                end -= 1;
+            }
+            flat.extend_from_slice(&row[..end]);
+            
+            // If the row wasn't completely full, it had a hard newline
+            if end < old_cols {
+                flat.push(Cell { character: '\n', ..Default::default() });
+            }
+        }
+        
+        // 2. Rebuild rows from flat stream
+        block.cells.clear();
+        let mut current_row = Vec::with_capacity(new_cols);
+        
+        for cell in flat {
+            if cell.character == '\n' {
+                while current_row.len() < new_cols {
+                    current_row.push(Cell::default());
+                }
+                block.cells.push(std::mem::take(&mut current_row));
+                current_row = Vec::with_capacity(new_cols);
+            } else {
+                current_row.push(cell);
+                if current_row.len() == new_cols {
+                    block.cells.push(std::mem::take(&mut current_row));
+                    current_row = Vec::with_capacity(new_cols);
+                }
+            }
+        }
+        
+        if !current_row.is_empty() {
+            while current_row.len() < new_cols {
+                current_row.push(Cell::default());
+            }
+            block.cells.push(current_row);
+        }
+        
+        if block.cells.is_empty() {
+            block.cells.push(vec![Cell::default(); new_cols]);
+        }
+    }
+
+
     /// Fully applies a new theme, retroactively updating all existing cells
     /// that match the old default colors, as well as setting the new defaults.
     pub fn apply_theme(&mut self, fg: [u8; 3], bg: [u8; 3], prompt: [u8; 3]) {
@@ -252,9 +319,15 @@ impl Perform for TerminalGrid {
 
     fn execute(&mut self, byte: u8) {
         match byte {
-            0x08 => { 
+            0x08 | 0x7F => { // <-- ADD 0x7F (DEL)
                 if self.cursor_x > 0 { 
                     self.cursor_x -= 1; 
+                    // Explicitly erase character to prevent ghosts
+                    if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
+                        if self.cursor_x < row.len() {
+                            row[self.cursor_x] = Cell::default();
+                        }
+                    }
                     if let Some(g) = &mut self.current_block.ghost_text {
                         g.pop();
                         if g.is_empty() { self.current_block.ghost_text = None; }
@@ -314,7 +387,53 @@ impl Perform for TerminalGrid {
                 self.cursor_y = 0;
             }
         }
+                else if action == 'K' { // <-- ADD THIS: Erase in Line
+            let mode = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&0);
+            if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
+                match mode {
+                    0 => { // Cursor to end of line
+                        for i in self.cursor_x..row.len() { row[i] = Cell::default(); }
+                    }
+                    1 => { // Start to cursor
+                        for i in 0..=self.cursor_x.min(row.len().saturating_sub(1)) { row[i] = Cell::default(); }
+                    }
+                    2 => { // Entire line
+                        for cell in row.iter_mut() { *cell = Cell::default(); }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        else if action == 'J' { // <-- IMPROVE THIS: Erase in Display
+            let mode = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&0);
+            match mode {
+                0 => { // Cursor to end of screen
+                    if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
+                        for i in self.cursor_x..row.len() { row[i] = Cell::default(); }
+                    }
+                    self.current_block.cells.truncate(self.cursor_y + 1);
+                }
+                1 => { // Start to cursor
+                    for i in 0..self.cursor_y {
+                        if let Some(row) = self.current_block.cells.get_mut(i) {
+                            for cell in row.iter_mut() { *cell = Cell::default(); }
+                        }
+                    }
+                    if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
+                        for i in 0..=self.cursor_x.min(row.len().saturating_sub(1)) { row[i] = Cell::default(); }
+                    }
+                }
+                2 | 3 => { // Entire screen
+                    self.current_block.cells.clear();
+                    self.current_block.add_row(self.cols);
+                    self.cursor_x = 0;
+                    self.cursor_y = 0;
+                }
+                _ => {}
+            }
+        }
     }
+    
 
     fn hook(&mut self, _: &Params, _: &[u8], _: bool, _: char) {}
     fn put(&mut self, _: u8) {}
