@@ -1,41 +1,56 @@
 # mitos-terminal
 
-MITOS's terminal emulator — an `egui`/`eframe` app that owns a PTY
-(`pty.rs`), parses what comes out of it (`grid.rs`, via `vte`), and
-renders it (`main.rs`). Not a shell itself; it hosts one, the same way
-Alacritty hosts zsh or Windows Terminal hosts PowerShell.
+**MITOS's native terminal emulator** — a cinematic, system-aware `egui`/`eframe` application that owns a PTY, parses ANSI/VT100 streams, and deeply integrates with the rest of the MITOS ecosystem. 
 
-See [`INTEGRATION.md`](INTEGRATION.md) for how this fits into the rest
-of MITOS — that document leads with an honest status table of what's
-actually implemented versus still planned, since a fair amount of it
-started as a roadmap rather than a description of working code.
+It is not just a shell wrapper; it is a rich GUI that hosts your shell (like Alacritty or Windows Terminal), but with built-in OS-level awareness, visual effects, and package management integration.
 
-## What's real today
+<!-- Tip: Add a screenshot or GIF of the terminal here! -->
+<!-- ![MITOS Terminal](docs/screenshot.png) -->
 
-- **Runs `mitos-shell`** if it's on `$PATH`, falls back to `sh`
-  otherwise (`pty.rs`) — so the terminal still opens even before
-  `mitos-shell` exists on a given system.
-- **Renders inline widgets** (buttons, progress bars) via a small
-  custom escape-sequence protocol ("MROP") — `grid.rs`'s `osc_dispatch`.
-- **Serves a Unix-socket IPC API** (`main.rs`'s `spawn_ipc_server`) so
-  another process — `mitos-system-monitor`, say — can read the terminal's
-  buffer or inject a widget into it.
-- **Suggests an install when a command isn't found** (`pkg_bridge.rs`):
-  watches PTY output for a "not found"-shaped line, and if
-  `mitos-pkgd` has an exact match for the attempted command, renders an
-  inline "📦 Install X" button using the same widget machinery above —
-  works today regardless of which shell is actually running.
-- **Applies a theme sent over IPC** (`TerminalGrid::apply_theme`) —
-  reachable today, though nothing currently calls it, since that needs
-  `mitos-settings` to actually send one.
+## ✨ Key Features
 
-## Building
+### 🎬 Cinematic Visuals & Phosphor Decay
+- **Matrix Code Rain**: A configurable, performant background effect with drifting holographic grids and radar sweeps.
+- **Phosphor Glow**: Newly printed characters ignite with a "white-hot" core and phosphor halo that smoothly cools down over time.
+- **Glitch Jitter**: Shell errors (like "command not found") trigger a cinematic red glitch effect strictly on the affected text.
+- **CRT Scanlines**: Subtle overlay for that authentic retro-futuristic feel.
 
-```sh
-cargo build --release
-```
+### 🧠 System-Aware Intelligence
+- **Package Bridge (`mitos-pkg`)**: Intercepts shell "command not found" errors and dynamically injects a GUI `📦 Install` button right into the terminal stream.
+- **Semantic Clipboard**: Press `Ctrl+Shift+C` on a word. If it's a valid file path, the terminal copies it to your clipboard as a native `file://` URI for the file manager.
+- **Captive Portal Detection**: Polls `mitos-network` via IPC and injects a "🌐 Open Login Page" button if a captive portal is detected on the network.
 
-Needs a `mitos-pkgd` reachable at `mitos-pkg`'s default socket path for
-the install-suggestion feature to do anything — without one, `mitos-pkg`
-lookups just silently return nothing (see `pkg_bridge.rs`), the rest of
-the terminal works the same either way.
+### 🛠️ Modern Terminal Essentials
+- **OSC 8 Hyperlinks**: Full support for clickable URLs rendered by CLI tools (opens in default browser).
+- **Standard Selection**: Click-and-drag text selection with standard `Ctrl+C` copying.
+- **Search (`Ctrl+F`)**: Instantly search and highlight matches across your entire scrollback history.
+- **Smart Reflow**: Resizing the window dynamically reflows text without breaking lines or leaving ghost characters.
+- **Memory Safe Scrollback**: Uses a capped `VecDeque` ring buffer to store history without consuming all your RAM during long sessions.
+
+## 🏗️ Ecosystem Integration
+
+`mitos-terminal` is designed to be the visual anchor of the MITOS operating system:
+
+- **MROP (MITOS Rich Object Protocol)**: A custom OSC sequence protocol allowing CLI tools to inject rich `egui` widgets (buttons, progress bars, sparklines) directly into the terminal output.
+- **Unix-Socket IPC**: Exposes an API so other MITOS daemons (like `mitos-system-monitor` or `mitos-settings`) can read the terminal buffer, inject widgets, or push theme updates in real-time.
+- **Theme Syncing**: Watches `~/.config/mitos/home.conf` and retroactively repaints the entire terminal history when the system theme (Light/Dark) or accent color changes.
+- **Shell Agnostic**: Automatically launches `mitos-shell` if installed, gracefully falling back to `sh` or `bash` during early OS bootstrapping.
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action |
+| :--- | :--- |
+| `Ctrl` + `C` | Copy selected text (Standard) |
+| `Ctrl` + `Shift` + `C` | **Semantic Copy** (Copies valid file paths as `file://` URIs) |
+| `Ctrl` + `F` | Toggle Search Bar (Highlights matches in history) |
+| `Ctrl` + `,` | Toggle Settings Menu (Toggle Matrix Rain, etc.) |
+| `Ctrl` + `Shift` + `V` | Paste |
+
+## ⚙️ Configuration
+
+Settings are automatically saved to and hot-reloaded from `~/.config/mitos/home.conf`.
+
+```ini
+theme_mode=dark
+accent_color=#55FF55
+matrix_rain=true
