@@ -317,8 +317,8 @@ fn extract_selection_text(grid: &TerminalGrid, sel: &Selection) -> String {
 
 impl MitosTerminalApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let (input_tx, mut input_rx) = mpsc::channel::<u8>(1024);
-        let (pty_tx, mut pty_rx) = mpsc::channel::<Vec<u8>>(1024);
+        let (input_tx, input_rx) = mpsc::channel::<u8>(1024);
+        let (pty_tx, pty_rx) = mpsc::channel::<Vec<u8>>(1024);
         let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u16, u16)>(); 
 
         // FIX: Cast u16 constants to usize
