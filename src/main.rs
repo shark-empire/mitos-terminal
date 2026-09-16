@@ -1,7 +1,7 @@
 mod grid;
 mod pty;
 mod pkg_bridge;
-mod fx; // <-- Cinematic Background FX
+mod fx; 
 
 // --- Standard Library ---
 use std::io::{Read, Write};
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::path::{Path, PathBuf};
 
 // --- Third-Party ---
-use arboard::Clipboard; // Semantic Clipboard (text/uri-list)
+use arboard::Clipboard; 
 use eframe::egui;
 use tokio::sync::mpsc;
 use tokio::net::{UnixListener, UnixStream};
@@ -300,7 +300,8 @@ impl MitosTerminalApp {
         let (pty_tx, mut pty_rx) = mpsc::channel::<Vec<u8>>(1024);
         let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u16, u16)>(); 
 
-        let grid = Arc::new(Mutex::new(TerminalGrid::new(DEFAULT_COLS, DEFAULT_ROWS)));
+        // FIX: Cast u16 constants to usize
+        let grid = Arc::new(Mutex::new(TerminalGrid::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize)));
         
         spawn_ipc_server(Arc::clone(&grid));
         spawn_settings_watcher(Arc::clone(&grid)); 
@@ -330,7 +331,9 @@ impl MitosTerminalApp {
         std::thread::spawn(move || {
             let pty = MitosPty::new(DEFAULT_COLS, DEFAULT_ROWS).expect("Failed to create PTY");
             let mut reader = pty.master.try_clone_reader().unwrap();
-            let mut writer = pty.master.take_writer();
+            
+            // FIX: Unwrap the Result from take_writer()
+            let mut writer = pty.master.take_writer().expect("Failed to take PTY writer");
 
             std::thread::spawn(move || {
                 let mut buf = [0; 1024];
@@ -432,7 +435,8 @@ impl MitosTerminalApp {
                 if let Ok(mut clipboard) = Clipboard::new() {
                     if let Ok(abs_path) = std::fs::canonicalize(path) {
                         let uri = format!("file://{}", abs_path.display());
-                        let _ = clipboard.set_text(uri);
+                        // FIX: Clone the string so we can print it after moving it into the clipboard
+                        let _ = clipboard.set_text(uri.clone());
                         eprintln!("[mitos-terminal] Copied URI to clipboard: {}", uri);
                     }
                 }
@@ -448,7 +452,6 @@ impl eframe::App for MitosTerminalApp {
         self.last_t = now;
         let frame = (now * 20.0) as u64; 
 
-        // Toggle Search
         if ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.ctrl) {
             self.search_active = !self.search_active;
             if !self.search_active { self.search_query.clear(); }
@@ -467,9 +470,12 @@ impl eframe::App for MitosTerminalApp {
             });
         }
 
-        let font_id = egui::TextStyle::Monospace.resolve(ctx.style());
-        let char_size = ctx.graphics(|gfx| {
-            gfx.layout_no_wrap("M".to_string(), font_id, egui::Color32::WHITE).size()
+        // FIX: egui 0.28 requires dereferencing the Arc<Style>
+        let font_id = egui::TextStyle::Monospace.resolve(&*ctx.style());
+        
+        // FIX: egui 0.28 moved layout_no_wrap to the Fonts API
+        let char_size = ctx.fonts(|f| {
+            f.layout_no_wrap("M".to_string(), font_id, egui::Color32::WHITE).size()
         });
         
         let screen_rect = ctx.screen_rect();
@@ -491,7 +497,8 @@ impl eframe::App for MitosTerminalApp {
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(4, 10, 18))) 
+            // FIX: egui 0.28 renamed Frame::NONE to Frame::none()
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(4, 10, 18))) 
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 let p = ui.painter().with_clip_rect(rect);
@@ -606,10 +613,12 @@ fn render_block(
     search_query: &str,
     selection: &mut Option<Selection>,
 ) {
-    egui::Frame::new()
+    // FIX: egui 0.28 renamed Frame::new() to Frame::none()
+    egui::Frame::none()
         .fill(egui::Color32::from_rgba_unmultiplied(10, 15, 20, 180)) 
         .rounding(6.0)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(45)))
+        // FIX: Explicit f32 type for stroke width
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(45)))
         .inner_margin(8.0)
         .show(ui, |ui| {
             ui.set_width(available_width - 16.0);
@@ -725,7 +734,6 @@ fn render_block(
                             ui.painter().rect_filled(rect, 0.0, bg);
                         }
                         
-                        // OSC 8 Hyperlink Handling
                         if cell.link_id > 0 {
                             let link_response = ui.interact(rect, egui::Id::new(("link", y, x, cell.link_id)), egui::Sense::click());
                             if link_response.clicked() {
