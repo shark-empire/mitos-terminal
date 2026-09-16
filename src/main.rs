@@ -455,11 +455,16 @@ impl eframe::App for MitosTerminalApp {
                     ctx.input(|i| {
                         for event in &i.events {
                             match event {
-                                egui::Event::Text(text) => {
-                                    for c in text.chars() {
-                                        let _ = self.input_tx.try_send(c as u8);
-                                    }
-                                }
+egui::Event::Text(text) => {
+    let mut buf = [0; 4];
+    for c in text.chars() {
+        let s = c.encode_utf8(&mut buf);
+        for b in s.as_bytes() {
+            let _ = self.input_tx.try_send(*b);
+        }
+    }
+}
+
                                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
                                     if *key == egui::Key::C && modifiers.ctrl && modifiers.shift {
                                         self.handle_semantic_clipboard();
