@@ -26,6 +26,7 @@ const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_BG: [u8; 3] = [20, 20, 25];
 const DEFAULT_FG: [u8; 3] = [200, 200, 200];
 const DEFAULT_PROMPT: [u8; 3] = [85, 255, 85];
+const MATRIX_GREEN: [u8; 3] = [0x33, 0xFF, 0x66]; // <-- ADD THIS (matches the image tint)
 
 // ============================================================================
 // APP STATE & SELECTION
@@ -51,6 +52,7 @@ struct MitosTerminalApp {
     selection: Option<Selection>,
     search_active: bool,
     search_query: String,
+    rain: fx::CodeRain,
 }
 
 // ============================================================================
@@ -320,6 +322,7 @@ impl MitosTerminalApp {
             selection: None,
             search_active: false,
             search_query: String::new(),
+            rain: fx::CodeRain::new(10.0, 0.55),
         }
     }
 
@@ -503,8 +506,11 @@ impl eframe::App for MitosTerminalApp {
                 let rect = ui.max_rect();
                 let p = ui.painter().with_clip_rect(rect);
 
-                fx::paint_grid(&p, rect, now, [0x1E, 0x90, 0xC8]);
-                fx::paint_sweep(&p, rect, now, [0x1E, 0x90, 0xC8]);
+                // Paint order = depth order: rain behind grid, grid behind sweep
+                self.rain.paint(&p, rect, now, MATRIX_GREEN);
+                fx::paint_grid(&p, rect, now, MATRIX_GREEN);
+                fx::paint_sweep(&p, rect, now, MATRIX_GREEN);
+
 
                 let available_width = ui.available_width();
                 let response = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
