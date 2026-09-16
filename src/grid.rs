@@ -1,10 +1,9 @@
 use vte::{Params, Perform, Parser};
-use std::time::{Duration, Instant}; 
+use std::time::Duration; 
 use std::collections::{HashMap, HashSet, VecDeque};
 use mitos_utils::ipc::{RichWidget, OSC_WIDGET, OSC_NEW_BLOCK};
 use crate::pkg_bridge::detect_missing_command;
 
-// Cap history to prevent RAM bloat during long-running sessions
 const MAX_SCROLLBACK_BLOCKS: usize = 5000; 
 
 #[derive(Clone, Copy, PartialEq)]
@@ -12,12 +11,8 @@ pub struct Cell {
     pub character: char,
     pub fg: [u8; 3],
     pub bg: [u8; 3],
-    /// 1.0 = freshly printed, cools to 0.0. Drives halo, white-hot core, glitch jitter.
     pub intensity: f32,
-    /// True if this cell is part of a shell error (e.g., "command not found").
-    /// Decouples the cinematic glitch effect from just "red text".
     pub is_error: bool,
-    /// 0 means no link. >0 means index in the ExecutionBlock's link_table + 1.
     pub link_id: u32,
 }
 
@@ -43,7 +38,6 @@ pub struct ExecutionBlock {
     pub start_time: std::time::Instant,
     pub ghost_text: Option<String>, 
     pub duration: Option<Duration>, 
-    /// Stores the actual URLs for OSC 8 hyperlinks to keep Cell lightweight/Copy-able.
     pub link_table: Vec<String>,
 }
 
@@ -74,12 +68,13 @@ pub struct ProcessResult {
 
 pub struct TerminalGrid {
     pub cols: usize,
-    /// Changed to VecDeque for efficient O(1) pop_front when capping scrollback history
     pub blocks: VecDeque<ExecutionBlock>, 
     pub current_block: ExecutionBlock, 
     pub cursor_x: usize,
     pub cursor_y: usize, 
-    parser: Parser,
+    // FIX: Wrapped in Option to allow taking it out during `process()` 
+    // to satisfy the borrow checker (vte requires &mut Parser and &mut Performer simultaneously)
+    parser: Option<Parser>,
     current_fg: [u8; 3],
     current_bg: [u8; 3],
     default_fg: [u8; 3],
@@ -90,7 +85,6 @@ pub struct TerminalGrid {
     pending_autocomplete: Option<String>, 
     pending_closed_blocks: Vec<ExecutionBlock>,
     pub any_hot: bool,
-    /// Tracks the active hyperlink ID being printed
     current_link_id: u32,
 }
 
@@ -105,12 +99,12 @@ impl TerminalGrid {
             current_block: initial_block,
             cursor_x: 0,
             cursor_y: 0,
-            parser: Parser::new(),
+            parser: Some(Parser::new()), // FIX: Initialize as Some
             current_fg: default_fg,
             current_bg: default_bg,
             default_fg,
             default_bg,
-            prompt_color: [85, 255, 85], // Default MITOS Green
+            prompt_color: [85, 255, 85], 
             pending_lookups: Vec::new(),
             already_suggested: HashSet::new(),
             pending_autocomplete: None,
@@ -120,7 +114,6 @@ impl TerminalGrid {
         }
     }
 
-    /// Pushes a block to history, capping the scrollback buffer if needed
     fn push_block(&mut self, block: ExecutionBlock) {
         if self.blocks.len() >= MAX_SCROLLBACK_BLOCKS {
             self.blocks.pop_front(); 
@@ -128,7 +121,6 @@ impl TerminalGrid {
         self.blocks.push_back(block);
     }
 
-    /// Fully applies a new theme, retroactively updating all existing cells
     pub fn apply_theme(&mut self, fg: [u8; 3], bg: [u8; 3], prompt: [u8; 3]) {
         let old_fg = self.default_fg;
         let old_bg = self.default_bg;
@@ -159,9 +151,13 @@ impl TerminalGrid {
     }
 
     pub fn process(&mut self, bytes: &[u8]) -> ProcessResult {
+        // FIX: Take the parser out to bypass the borrow checker, then put it back
+        let mut parser = self.parser.take().unwrap();
         for &byte in bytes {
-            self.parser.advance(self, byte);
+            parser.advance(self, byte);
         }
+        self.parser = Some(parser);
+
         ProcessResult {
             missing_commands: std::mem::take(&mut self.pending_lookups),
             autocomplete_request: self.pending_autocomplete.take(),
@@ -191,7 +187,6 @@ impl TerminalGrid {
         out
     }
 
-    /// Call once per frame from main.rs, before painting.
     pub fn tick(&mut self, dt: f32) {
         if !self.any_hot { return; }
         let cool = dt * 2.2; 
@@ -209,7 +204,6 @@ impl TerminalGrid {
         self.any_hot = still_hot;
     }
 
-    /// Re-ignite a row for effect beats and mark it as an error for jitter
     pub fn spike_row_error(&mut self, row: usize) {
         if let Some(r) = self.current_block.cells.get_mut(row) {
             for c in r.iter_mut() {
@@ -247,9 +241,6 @@ impl TerminalGrid {
         }
     }
 
-    // =========================================================================
-    // REFLOW LOGIC (Handles Window Resizing)
-    // =========================================================================
     pub fn resize(&mut self, new_cols: usize) {
         if new_cols == self.cols || new_cols == 0 { return; }
         
@@ -260,7 +251,6 @@ impl TerminalGrid {
         
         self.cols = new_cols;
         
-        // Clamp cursor to prevent out-of-bounds panics
         self.cursor_y = self.cursor_y.min(self.current_block.cells.len().saturating_sub(1));
         self.cursor_x = self.cursor_x.min(new_cols.saturating_sub(1));
     }
@@ -269,7 +259,6 @@ impl TerminalGrid {
         let old_cols = block.cells.get(0).map(|r| r.len()).unwrap_or(0);
         let mut flat: Vec<Cell> = Vec::new();
         
-        // 1. Flatten existing cells
         for row in &block.cells {
             let mut end = row.len();
             while end > 0 && row[end-1].character == ' ' {
@@ -282,7 +271,6 @@ impl TerminalGrid {
             }
         }
         
-        // 2. Rebuild rows
         block.cells.clear();
         let mut current_row = Vec::with_capacity(new_cols);
         
@@ -330,7 +318,7 @@ impl Perform for TerminalGrid {
             fg: self.current_fg,
             bg: self.current_bg,
             intensity: 1.0, 
-            is_error: false, // Typing clears error state
+            is_error: false, 
             link_id: self.current_link_id,
         };
         self.any_hot = true;
@@ -339,10 +327,9 @@ impl Perform for TerminalGrid {
 
     fn execute(&mut self, byte: u8) {
         match byte {
-            0x08 | 0x7F => { // Backspace & DEL
+            0x08 | 0x7F => { 
                 if self.cursor_x > 0 { 
                     self.cursor_x -= 1; 
-                    // Explicitly erase character to prevent ghosts
                     if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
                         if self.cursor_x < row.len() {
                             row[self.cursor_x] = Cell::default();
@@ -354,7 +341,7 @@ impl Perform for TerminalGrid {
                     }
                 }
             }
-            0x0A | 0x0B | 0x0C => { // Line Feed, Vertical Tab, Form Feed
+            0x0A | 0x0B | 0x0C => { 
                 self.check_line_for_missing_command();
                 self.cursor_y += 1;
                 while self.current_block.cells.len() <= self.cursor_y {
@@ -362,7 +349,7 @@ impl Perform for TerminalGrid {
                 }
                 self.current_block.ghost_text = None; 
             }
-            0x0D => { // Carriage Return
+            0x0D => { 
                 self.cursor_x = 0;
             }
             _ => {}
@@ -398,33 +385,33 @@ impl Perform for TerminalGrid {
                 self.current_block.add_row(self.cols);
             }
         }
-        else if action == 'K' { // Erase in Line (EL)
+        else if action == 'K' { 
             let mode = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&0);
             if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
                 match mode {
-                    0 => { // Cursor to end of line
+                    0 => { 
                         for i in self.cursor_x..row.len() { row[i] = Cell::default(); }
                     }
-                    1 => { // Start to cursor
+                    1 => { 
                         for i in 0..=self.cursor_x.min(row.len().saturating_sub(1)) { row[i] = Cell::default(); }
                     }
-                    2 => { // Entire line
+                    2 => { 
                         for cell in row.iter_mut() { *cell = Cell::default(); }
                     }
                     _ => {}
                 }
             }
         }
-        else if action == 'J' { // Erase in Display (ED)
+        else if action == 'J' { 
             let mode = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&0);
             match mode {
-                0 => { // Cursor to end of screen
+                0 => { 
                     if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
                         for i in self.cursor_x..row.len() { row[i] = Cell::default(); }
                     }
                     self.current_block.cells.truncate(self.cursor_y + 1);
                 }
-                1 => { // Start to cursor
+                1 => { 
                     for i in 0..self.cursor_y {
                         if let Some(row) = self.current_block.cells.get_mut(i) {
                             for cell in row.iter_mut() { *cell = Cell::default(); }
@@ -434,9 +421,9 @@ impl Perform for TerminalGrid {
                         for i in 0..=self.cursor_x.min(row.len().saturating_sub(1)) { row[i] = Cell::default(); }
                     }
                 }
-                2 | 3 => { // Entire screen (and scrollback for 3)
+                2 | 3 => { 
                     if *mode == 3 {
-                        self.blocks.clear(); // Clear scrollback history too
+                        self.blocks.clear(); 
                     }
                     self.current_block.cells.clear();
                     self.current_block.add_row(self.cols);
@@ -455,19 +442,17 @@ impl Perform for TerminalGrid {
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         if params.is_empty() { return; }
         
-        // OSC 8 Hyperlinks: \e]8;params;uri\e\\
-        // vte splits by ';', so params[0]="8", params[1]="...", params[2]="uri"
         if params.len() >= 3 {
             if let Ok(cmd) = std::str::from_utf8(params[0]) {
                 if cmd == "8" {
                     let uri = std::str::from_utf8(params[2]).unwrap_or("");
                     if uri.is_empty() {
-                        self.current_link_id = 0; // Close hyperlink
+                        self.current_link_id = 0; 
                     } else {
                         self.current_link_id = (self.current_block.link_table.len() as u32) + 1;
                         self.current_block.link_table.push(uri.to_string());
                     }
-                    return; // Handled OSC 8
+                    return; 
                 }
             }
         }
@@ -492,12 +477,12 @@ impl Perform for TerminalGrid {
                 
                 let old_block = std::mem::replace(&mut self.current_block, ExecutionBlock::new(prompt, self.cols));
                 
-                self.push_block(old_block.clone()); // Use capped push
+                self.push_block(old_block.clone()); 
                 self.pending_closed_blocks.push(old_block);
                 
                 self.cursor_x = 0;
                 self.cursor_y = 0;
-                self.current_link_id = 0; // Reset link state on new prompt
+                self.current_link_id = 0; 
             }
             else if ps == "MITOS_AUTOCOMPLETE" && params.len() >= 2 {
                 if let Ok(pt) = std::str::from_utf8(params[1]) {
