@@ -1,7 +1,7 @@
 mod grid;
 mod pty;
 mod pkg_bridge;
-mod fx; // <-- ADDED: Cinematic Background FX
+mod fx; // <-- Cinematic Background FX
 
 // --- Standard Library ---
 use std::io::{Read, Write};
@@ -28,8 +28,18 @@ const DEFAULT_FG: [u8; 3] = [200, 200, 200];
 const DEFAULT_PROMPT: [u8; 3] = [85, 255, 85];
 
 // ============================================================================
-// APP STATE
+// APP STATE & SELECTION
 // ============================================================================
+
+#[derive(Clone, Copy, PartialEq)]
+struct Selection {
+    start_block: usize,
+    start_row: usize,
+    start_col: usize,
+    end_block: usize,
+    end_row: usize,
+    end_col: usize,
+}
 
 struct MitosTerminalApp {
     grid: Arc<Mutex<TerminalGrid>>,
@@ -37,7 +47,10 @@ struct MitosTerminalApp {
     resize_tx: std::sync::mpsc::Sender<(u16, u16)>,
     last_cols: u16,
     last_rows: u16,
-    last_t: f64, // <-- ADDED: Frame clock for animations
+    last_t: f64,
+    selection: Option<Selection>,
+    search_active: bool,
+    search_query: String,
 }
 
 // ============================================================================
@@ -220,25 +233,79 @@ fn parse_color(s: Option<&str>, default: [u8; 3]) -> [u8; 3] {
 }
 
 // ============================================================================
+// SELECTION HELPER
+// ============================================================================
+
+fn extract_selection_text(grid: &TerminalGrid, sel: &Selection) -> String {
+    let mut out = String::new();
+    
+    let get_block = |idx: usize| -> Option<&ExecutionBlock> {
+        if idx < grid.blocks.len() {
+            Some(&grid.blocks[idx])
+        } else if idx == grid.blocks.len() {
+            Some(&grid.current_block)
+        } else {
+            None
+        }
+    };
+
+    let (min_b, max_b) = if sel.start_block <= sel.end_block {
+        (sel.start_block, sel.end_block)
+    } else {
+        (sel.end_block, sel.start_block)
+    };
+
+    let (min_r, max_r, min_c, max_c) = if sel.start_block < sel.end_block || (sel.start_block == sel.end_block && sel.start_row <= sel.end_row) {
+        (sel.start_row, sel.end_row, sel.start_col, sel.end_col)
+    } else {
+        (sel.end_row, sel.start_row, sel.end_col, sel.start_col)
+    };
+
+    for b_idx in min_b..=max_b {
+        if let Some(block) = get_block(b_idx) {
+            let r_start = if b_idx == min_b { min_r } else { 0 };
+            let r_end = if b_idx == max_b { max_r } else { block.cells.len().saturating_sub(1) };
+            
+            for r_idx in r_start..=r_end {
+                if let Some(row) = block.cells.get(r_idx) {
+                    let c_start = if b_idx == min_b && r_idx == min_r { min_c } else { 0 };
+                    let c_end = if b_idx == max_b && r_idx == max_r { max_c } else { row.len().saturating_sub(1) };
+                    
+                    let mut line = String::new();
+                    for c_idx in c_start..=c_end {
+                        if let Some(cell) = row.get(c_idx) {
+                            if cell.character != '\0' { 
+                               line.push(cell.character);
+                            }
+                        }
+                    }
+                    out.push_str(&line);
+                }
+                if r_idx < r_end || b_idx < max_b {
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out.trim_end().to_string()
+}
+
+// ============================================================================
 // APP IMPLEMENTATION
 // ============================================================================
 
 impl MitosTerminalApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Channels
         let (input_tx, mut input_rx) = mpsc::channel::<u8>(1024);
         let (pty_tx, mut pty_rx) = mpsc::channel::<Vec<u8>>(1024);
         let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u16, u16)>(); 
 
-        // State
         let grid = Arc::new(Mutex::new(TerminalGrid::new(DEFAULT_COLS, DEFAULT_ROWS)));
         
-        // Daemons
         spawn_ipc_server(Arc::clone(&grid));
         spawn_settings_watcher(Arc::clone(&grid)); 
         spawn_network_poller(Arc::clone(&grid));
 
-        // PTY Threads
         Self::spawn_pty_handler(pty_tx, input_rx, resize_rx);
         Self::spawn_grid_processor(Arc::clone(&grid), pty_rx);
 
@@ -248,7 +315,10 @@ impl MitosTerminalApp {
             resize_tx,
             last_cols: DEFAULT_COLS,
             last_rows: DEFAULT_ROWS,
-            last_t: 0.0, // <-- ADDED
+            last_t: 0.0,
+            selection: None,
+            search_active: false,
+            search_query: String::new(),
         }
     }
 
@@ -262,7 +332,6 @@ impl MitosTerminalApp {
             let mut reader = pty.master.try_clone_reader().unwrap();
             let mut writer = pty.master.take_writer();
 
-            // Reader
             std::thread::spawn(move || {
                 let mut buf = [0; 1024];
                 while let Ok(n) = reader.read(&mut buf) {
@@ -271,14 +340,12 @@ impl MitosTerminalApp {
                 }
             });
 
-            // Writer
             tokio::runtime::Runtime::new().unwrap().block_on(async {
                 while let Some(byte) = input_rx.recv().await {
                     let _ = writer.write_all(&[byte]);
                 }
             });
 
-            // Resizer
             while let Ok((cols, rows)) = resize_rx.recv() {
                 if let Err(e) = pty.resize(cols, rows) {
                     eprintln!("[mitos-terminal] Resize failed: {e}");
@@ -297,7 +364,6 @@ impl MitosTerminalApp {
                         g.process(&bytes)
                     };
 
-                    // 1. mitos-pkg lookup
                     for cmd in result.missing_commands {
                         let grid_for_lookup = Arc::clone(&ui_grid);
                         tokio::task::spawn_blocking(move || {
@@ -309,7 +375,6 @@ impl MitosTerminalApp {
                         });
                     }
 
-                    // 2. File Manager Autocomplete
                     if let Some(partial) = result.autocomplete_request {
                         let grid_for_ac = Arc::clone(&ui_grid);
                         tokio::spawn(async move {
@@ -328,7 +393,6 @@ impl MitosTerminalApp {
                         });
                     }
 
-                    // 3. Long-Running Task Notifications
                     for block in result.closed_blocks {
                         if let Some(dur) = block.duration {
                             if dur.as_secs() >= 5 {
@@ -379,13 +443,30 @@ impl MitosTerminalApp {
 
 impl eframe::App for MitosTerminalApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // --- CINEMATIC CLOCK ADDED ---
         let now = ctx.input(|i| i.time);
         let dt = (now - self.last_t).clamp(0.0, 0.1) as f32;
         self.last_t = now;
-        let frame = (now * 20.0) as u64; // 20 Hz clock for glitch jitter
+        let frame = (now * 20.0) as u64; 
 
-        // Window Resize Handling
+        // Toggle Search
+        if ctx.input(|i| i.key_pressed(egui::Key::F) && i.modifiers.ctrl) {
+            self.search_active = !self.search_active;
+            if !self.search_active { self.search_query.clear(); }
+        }
+
+        if self.search_active {
+            egui::TopBottomPanel::top("search_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    ui.text_edit_singleline(&mut self.search_query);
+                    if ui.button("✖").clicked() {
+                        self.search_active = false;
+                        self.search_query.clear();
+                    }
+                });
+            });
+        }
+
         let font_id = egui::TextStyle::Monospace.resolve(ctx.style());
         let char_size = ctx.graphics(|gfx| {
             gfx.layout_no_wrap("M".to_string(), font_id, egui::Color32::WHITE).size()
@@ -401,24 +482,20 @@ impl eframe::App for MitosTerminalApp {
             
             let _ = self.resize_tx.send((new_cols, new_rows));
             if let Ok(mut g) = self.grid.lock() { 
-                g.resize(new_cols as usize); // <-- REPLACE `g.cols = ...` WITH THIS
+                g.resize(new_cols as usize);
             }
         }
 
-
-        // --- TICK GRID DECAY ADDED ---
         if let Ok(mut g) = self.grid.try_lock() {
             g.tick(dt);
         }
 
-        // UI Rendering
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(4, 10, 18))) // Deep Aurora Void
+            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(4, 10, 18))) 
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 let p = ui.painter().with_clip_rect(rect);
 
-                // --- BACKGROUND FX ADDED ---
                 fx::paint_grid(&p, rect, now, [0x1E, 0x90, 0xC8]);
                 fx::paint_sweep(&p, rect, now, [0x1E, 0x90, 0xC8]);
 
@@ -432,13 +509,14 @@ impl eframe::App for MitosTerminalApp {
                         let grid = self.grid.lock().unwrap();
                         let prompt_color = grid.prompt_color; 
 
-                        for block in &grid.blocks {
-                            render_block(ui, block, available_width, &self.input_tx, false, 0, 0, prompt_color, now, frame);
+                        for (block_idx, block) in grid.blocks.iter().enumerate() {
+                            render_block(ui, block, block_idx, available_width, &self.input_tx, false, 0, 0, prompt_color, now, frame, &self.search_query, &mut self.selection);
                         }
 
                         render_block(
                             ui,
                             &grid.current_block,
+                            grid.blocks.len(),
                             available_width,
                             &self.input_tx,
                             true,
@@ -447,30 +525,44 @@ impl eframe::App for MitosTerminalApp {
                             prompt_color,
                             now,
                             frame,
+                            &self.search_query,
+                            &mut self.selection,
                         );
                     });
 
-                // --- CRT SCANLINES ADDED ---
                 fx::paint_scanlines(&p, rect);
 
-                // Input Handling
                 if response.has_focus() {
                     ctx.input(|i| {
                         for event in &i.events {
                             match event {
-egui::Event::Text(text) => {
-    let mut buf = [0; 4];
-    for c in text.chars() {
-        let s = c.encode_utf8(&mut buf);
-        for b in s.as_bytes() {
-            let _ = self.input_tx.try_send(*b);
-        }
-    }
-}
-
+                                egui::Event::Text(text) => {
+                                    let mut buf = [0; 4];
+                                    for c in text.chars() {
+                                        let s = c.encode_utf8(&mut buf);
+                                        for b in s.as_bytes() {
+                                            let _ = self.input_tx.try_send(*b);
+                                        }
+                                    }
+                                }
                                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
                                     if *key == egui::Key::C && modifiers.ctrl && modifiers.shift {
                                         self.handle_semantic_clipboard();
+                                        continue;
+                                    }
+                                    
+                                    if *key == egui::Key::C && modifiers.ctrl {
+                                        if let Some(sel) = self.selection {
+                                            let g = self.grid.lock().unwrap();
+                                            let text = extract_selection_text(&g, &sel);
+                                            if !text.is_empty() {
+                                                if let Ok(mut clipboard) = Clipboard::new() {
+                                                    let _ = clipboard.set_text(text);
+                                                }
+                                            }
+                                        } else {
+                                            self.handle_semantic_clipboard();
+                                        }
                                         continue;
                                     }
 
@@ -502,17 +594,20 @@ egui::Event::Text(text) => {
 fn render_block(
     ui: &mut egui::Ui,
     block: &ExecutionBlock,
+    block_idx: usize,
     available_width: f32,
     input_tx: &mpsc::Sender<u8>,
     is_active: bool,
     cursor_y: usize,
     cursor_x: usize,
     prompt_color: [u8; 3],
-    now: f64,   // <-- ADDED
-    frame: u64, // <-- ADDED
+    now: f64,
+    frame: u64,
+    search_query: &str,
+    selection: &mut Option<Selection>,
 ) {
     egui::Frame::new()
-        .fill(egui::Color32::from_rgba_unmultiplied(10, 15, 20, 180)) // Semi-transparent to show grid
+        .fill(egui::Color32::from_rgba_unmultiplied(10, 15, 20, 180)) 
         .rounding(6.0)
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(45)))
         .inner_margin(8.0)
@@ -532,7 +627,52 @@ fn render_block(
             let space_width = char_size.x;
             let line_height = char_size.y;
 
+            let cells_start_pos = ui.cursor().min;
+            let block_response = ui.interact(ui.max_rect(), egui::Id::new(("block", block_idx)), egui::Sense::click_and_drag());
+
+            if block_response.drag_started() || block_response.dragged() {
+                if let Some(pos) = block_response.interact_pointer_pos() {
+                    let rel_x = pos.x - cells_start_pos.x;
+                    let rel_y = pos.y - cells_start_pos.y;
+                    let col = (rel_x / space_width).floor().max(0.0) as usize;
+                    let row = (rel_y / line_height).floor().max(0.0) as usize;
+                    
+                    let row = row.min(block.cells.len().saturating_sub(1));
+                    let max_col = block.cells.get(row).map(|r| r.len().saturating_sub(1)).unwrap_or(0);
+                    let col = col.min(max_col);
+                    
+                    if block_response.drag_started() {
+                        *selection = Some(Selection {
+                            start_block: block_idx, start_row: row, start_col: col,
+                            end_block: block_idx, end_row: row, end_col: col,
+                        });
+                    } else if let Some(sel) = selection {
+                        *selection = Some(Selection {
+                            start_block: sel.start_block, start_row: sel.start_row, start_col: sel.start_col,
+                            end_block: block_idx, end_row: row, end_col: col,
+                        });
+                    }
+                }
+            }
+
             for (y, row) in block.cells.iter().enumerate() {
+                let lower_q = search_query.to_lowercase();
+                let row_text: String = row.iter().map(|c| c.character).collect();
+                let lower_row = row_text.to_lowercase();
+                let mut matches = vec![false; row.len()];
+
+                if !lower_q.is_empty() {
+                    let q_len = lower_q.chars().count();
+                    let mut start = 0;
+                    while let Some(idx) = lower_row[start..].find(&lower_q) {
+                        let abs_idx = start + idx;
+                        for i in 0..q_len {
+                            if abs_idx + i < matches.len() { matches[abs_idx + i] = true; }
+                        }
+                        start = abs_idx + 1;
+                    }
+                }
+
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
@@ -542,25 +682,67 @@ fn render_block(
                             continue;
                         }
 
+                        let is_match = matches.get(x).copied().unwrap_or(false);
+                        
+                        let is_selected = if let Some(sel) = selection {
+                            let (min_b, max_b) = if sel.start_block <= sel.end_block { (sel.start_block, sel.end_block) } else { (sel.end_block, sel.start_block) };
+                            let (min_r, max_r, min_c, max_c) = if sel.start_block < sel.end_block || (sel.start_block == sel.end_block && sel.start_row <= sel.end_row) {
+                                (sel.start_row, sel.end_row, sel.start_col, sel.end_col)
+                            } else {
+                                (sel.end_row, sel.start_row, sel.end_col, sel.start_col)
+                            };
+
+                            if block_idx > min_b && block_idx < max_b {
+                                true
+                            } else if block_idx == min_b && block_idx == max_b {
+                                (y > min_r && y < max_r) || (y == min_r && x >= min_c && (y != max_r || x <= max_c)) || (y == max_r && x <= max_c && y != min_r)
+                            } else if block_idx == min_b {
+                                y > min_r || (y == min_r && x >= min_c)
+                            } else if block_idx == max_b {
+                                y < max_r || (y == max_r && x <= max_c)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
                         let is_cursor = is_active && x == cursor_x && y == cursor_y;
                         let mut fg = egui::Color32::from_rgb(cell.fg[0], cell.fg[1], cell.fg[2]);
                         let mut bg = egui::Color32::from_rgb(cell.bg[0], cell.bg[1], cell.bg[2]);
+
+                        if is_selected {
+                            bg = egui::Color32::from_rgba_unmultiplied(0, 120, 215, 100);
+                        } else if is_match {
+                            bg = egui::Color32::from_rgba_unmultiplied(255, 200, 0, 150);
+                        }
 
                         if is_cursor { std::mem::swap(&mut fg, &mut bg); }
 
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(space_width, line_height), egui::Sense::hover());
 
-                        if is_cursor || cell.bg != DEFAULT_BG {
+                        if is_cursor || cell.bg != DEFAULT_BG || is_selected || is_match {
                             ui.painter().rect_filled(rect, 0.0, bg);
+                        }
+                        
+                        // OSC 8 Hyperlink Handling
+                        if cell.link_id > 0 {
+                            let link_response = ui.interact(rect, egui::Id::new(("link", y, x, cell.link_id)), egui::Sense::click());
+                            if link_response.clicked() {
+                                if let Some(url) = block.link_table.get((cell.link_id - 1) as usize) {
+                                    let _ = open::that(url);
+                                }
+                            }
+                            if link_response.hovered() {
+                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                            }
                         }
 
                         if cell.character != ' ' && cell.character != '\0' {
-                            // --- CINEMATIC TEXT RENDERING ---
                             let text_rgb = if is_cursor { cell.bg } else { cell.fg };
                             let t = cell.intensity;
                             let is_err = cell.is_error; 
 
-                            // 1. GLITCH JITTER
                             let jx = if is_err && t > 0.05 {
                                 ((grid::hash3(x as u64, y as u64, frame) % 3) as f32 - 1.0) * 1.5
                             } else { 0.0 };
@@ -568,7 +750,6 @@ fn render_block(
                             let center = rect.center();
                             let text_pos = egui::pos2(center.x + jx, center.y);
 
-                            // 2. PHOSPHOR HALO
                             if t > 0.05 {
                                 let halo = egui::Color32::from_rgba_unmultiplied(
                                     text_rgb[0], text_rgb[1], text_rgb[2], (t * 90.0) as u8);
@@ -584,7 +765,6 @@ fn render_block(
                                 }
                             }
 
-                            // 3. CORE COLOR (white-hot cooling)
                             let core = if t > 0.0 {
                                 let k = t * 0.85;
                                 egui::Color32::from_rgb(
@@ -592,7 +772,7 @@ fn render_block(
                                     (text_rgb[1] as f32 + (255.0 - text_rgb[1] as f32) * k) as u8,
                                     (text_rgb[2] as f32 + (255.0 - text_rgb[2] as f32) * k) as u8)
                             } else {
-                                fg // This is already swapped if is_cursor
+                                fg 
                             };
 
                             ui.painter().text(
