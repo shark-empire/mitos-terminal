@@ -105,16 +105,16 @@ impl CodeRain {
 pub fn paint_grid(p: &Painter, rect: Rect, now: f64, tint: [u8; 3]) {
     let step = 56.0;
     let drift = (now * 8.0) % step;                       // grid breathes downward
-    let line = Stroke::new(1.0, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], 9));
-    let mut y = rect.top() - step + drift as f32;
+    let line = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], 9));
+    let mut y = rect.top() - (step as f32) + (drift as f32);
     while y < rect.bottom() {
         p.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], line);
-        y += step;
+        y += step as f32;
     }
     let mut x = rect.left();
     while x < rect.right() {
         p.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], line);
-        x += step;
+        x += step as f32;
     }
 }
 
@@ -126,10 +126,10 @@ pub fn paint_sweep(p: &Painter, rect: Rect, now: f64, tint: [u8; 3]) {
         let a = (16.0 * (1.0 - i as f32 / 24.0)) as u8;
         p.line_segment(
             [Pos2::new(rect.left(), y - i as f32 * 2.0), Pos2::new(rect.right(), y - i as f32 * 2.0)],
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], a)));
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], a)));
     }
     p.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-        Stroke::new(1.5, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], 55)));
+        Stroke::new(1.5_f32, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], 55)));
 }
 
 // --------------------------------------------------------------- CRT scanlines
@@ -138,7 +138,7 @@ pub fn paint_scanlines(p: &Painter, rect: Rect) {
     let mut y = rect.top();
     while y < rect.bottom() {
         p.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-                       Stroke::new(1.0, dark));
+                       Stroke::new(1.0_f32, dark));
         y += 3.0;
     }
 }
