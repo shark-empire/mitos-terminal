@@ -482,6 +482,7 @@ impl eframe::App for MitosTerminalApp {
         });
         
         let screen_rect = ctx.screen_rect();
+        self.rain.tick(dt, screen_rect); // <-- ADD THIS
         let new_cols = ((screen_rect.width() - 32.0) / char_size.x).max(10.0) as u16;
         let new_rows = ((screen_rect.height() - 64.0) / char_size.y).max(5.0) as u16;
 
