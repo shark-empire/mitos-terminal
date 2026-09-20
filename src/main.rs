@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-
 // --- Third-Party ---
 use arboard::Clipboard; 
 use eframe::egui;
@@ -28,7 +27,7 @@ const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_BG: [u8; 3] = [20, 20, 25];
 const DEFAULT_FG: [u8; 3] = [200, 200, 200];
 const DEFAULT_PROMPT: [u8; 3] = [85, 255, 85];
-const MATRIX_GREEN: [u8; 3] = [0x33, 0xFF, 0x66]; // <-- ADD THIS (matches the image tint)
+const MATRIX_GREEN: [u8; 3] = [0x33, 0xFF, 0x66];
 
 // ============================================================================
 // APP STATE & SELECTION
@@ -57,6 +56,20 @@ struct MitosTerminalApp {
     rain: fx::CodeRain,
     rain_enabled: Arc<AtomicBool>,
     show_settings: bool,
+}
+
+// ============================================================================
+// RENDER CONTEXT 
+// ============================================================================
+
+struct RenderContext<'a> {
+    available_width: f32,
+    input_tx: &'a mpsc::Sender<u8>,
+    prompt_color: [u8; 3],
+    now: f64,
+    frame: u64,
+    search_query: &'a str,
+    selection: &'a mut Option<Selection>,
 }
 
 // ============================================================================
@@ -173,7 +186,6 @@ fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>, rain_enabled: Arc<Atom
             let _ = tx.send(res);
         }, Config::default()).expect("Failed to create file watcher");
 
-        // Parse settings on startup
         if let Ok(content) = std::fs::read_to_string(&config_path) {
             apply_home_conf_theme(&grid, &content);
             
@@ -187,18 +199,15 @@ fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>, rain_enabled: Arc<Atom
         let watch_dir = config_path.parent().unwrap().to_path_buf();
         let _ = watcher.watch(&watch_dir, RecursiveMode::NonRecursive);
 
-        for res in rx {
-            if let Ok(event) = res {
-                let is_home_conf = event.paths.iter().any(|p| p.file_name() == Some(std::ffi::OsStr::new("home.conf")));
-                if is_home_conf {
-                    if let Ok(content) = std::fs::read_to_string(&config_path) {
-                        apply_home_conf_theme(&grid, &content);
-                        
-                        // Update settings when the file changes externally
-                        for line in content.lines() {
-                            if let Some(val) = line.strip_prefix("matrix_rain=") {
-                                rain_enabled.store(val.trim() == "true" || val.trim() == "1", Ordering::Relaxed);
-                            }
+        for event in rx.into_iter().flatten() {
+            let is_home_conf = event.paths.iter().any(|p| p.file_name() == Some(std::ffi::OsStr::new("home.conf")));
+            if is_home_conf {
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    apply_home_conf_theme(&grid, &content);
+                    
+                    for line in content.lines() {
+                        if let Some(val) = line.strip_prefix("matrix_rain=") {
+                            rain_enabled.store(val.trim() == "true" || val.trim() == "1", Ordering::Relaxed);
                         }
                     }
                 }
@@ -206,7 +215,6 @@ fn spawn_settings_watcher(grid: Arc<Mutex<TerminalGrid>>, rain_enabled: Arc<Atom
         }
     });
 }
-
 
 fn apply_home_conf_theme(grid: &Arc<Mutex<TerminalGrid>>, content: &str) {
     let (theme_mode, accent_color) = parse_home_conf(content);
@@ -321,7 +329,6 @@ impl MitosTerminalApp {
         let (pty_tx, pty_rx) = mpsc::channel::<Vec<u8>>(1024);
         let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u16, u16)>(); 
 
-        // FIX: Cast u16 constants to usize
         let grid = Arc::new(Mutex::new(TerminalGrid::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize)));
 
         let rain_enabled = Arc::new(AtomicBool::new(true));
@@ -366,7 +373,6 @@ impl MitosTerminalApp {
             let pty = MitosPty::new(DEFAULT_COLS, DEFAULT_ROWS).expect("Failed to create PTY");
             let mut reader = pty.master.try_clone_reader().unwrap();
             
-            // FIX: Unwrap the Result from take_writer()
             let mut writer = pty.master.take_writer().expect("Failed to take PTY writer");
 
             std::thread::spawn(move || {
@@ -469,7 +475,6 @@ impl MitosTerminalApp {
                 if let Ok(mut clipboard) = Clipboard::new() {
                     if let Ok(abs_path) = std::fs::canonicalize(path) {
                         let uri = format!("file://{}", abs_path.display());
-                        // FIX: Clone the string so we can print it after moving it into the clipboard
                         let _ = clipboard.set_text(uri.clone());
                         eprintln!("[mitos-terminal] Copied URI to clipboard: {}", uri);
                     }
@@ -492,7 +497,6 @@ impl eframe::App for MitosTerminalApp {
                 }
             });
 
-        // --- NEW: Settings Window ---
         if self.show_settings {
             egui::Window::new("⚙️ MITOS Settings")
                 .collapsible(false)
@@ -535,18 +539,17 @@ impl eframe::App for MitosTerminalApp {
             });
         }
 
-        // FIX: egui 0.28 requires dereferencing the Arc<Style>
-        let font_id = egui::TextStyle::Monospace.resolve(&*ctx.style());
+        let font_id = egui::TextStyle::Monospace.resolve(&ctx.style());
         
-        // FIX: egui 0.28 moved layout_no_wrap to the Fonts API
         let char_size = ctx.fonts(|f| {
             f.layout_no_wrap("M".to_string(), font_id, egui::Color32::WHITE).size()
         });
         
         let screen_rect = ctx.screen_rect();
-                if self.rain_enabled.load(Ordering::Relaxed) {
+        if self.rain_enabled.load(Ordering::Relaxed) {
             self.rain.tick(dt, screen_rect);
         }
+        
         let new_cols = ((screen_rect.width() - 32.0) / char_size.x).max(10.0) as u16;
         let new_rows = ((screen_rect.height() - 64.0) / char_size.y).max(5.0) as u16;
 
@@ -565,22 +568,17 @@ impl eframe::App for MitosTerminalApp {
         }
 
         egui::CentralPanel::default()
-            // FIX: egui 0.28 renamed Frame::NONE to Frame::none()
             .frame(egui::Frame::none().fill(egui::Color32::from_rgb(4, 10, 18))) 
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 let p = ui.painter().with_clip_rect(rect);
 
-                // --- NEW: Only paint rain if enabled ---
                 if self.rain_enabled.load(Ordering::Relaxed) {
                     self.rain.paint(&p, rect, now, MATRIX_GREEN);
                 }
-                // ---------------------------------------
                 
                 fx::paint_grid(&p, rect, now, MATRIX_GREEN);
                 fx::paint_sweep(&p, rect, now, MATRIX_GREEN);
-
-
 
                 let available_width = ui.available_width();
                 let response = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
@@ -593,23 +591,45 @@ impl eframe::App for MitosTerminalApp {
                         let prompt_color = grid.prompt_color; 
 
                         for (block_idx, block) in grid.blocks.iter().enumerate() {
-                            render_block(ui, block, block_idx, available_width, &self.input_tx, false, 0, 0, prompt_color, now, frame, &self.search_query, &mut self.selection);
+                            let mut ctx = RenderContext {
+                                available_width,
+                                input_tx: &self.input_tx,
+                                prompt_color,
+                                now,
+                                frame,
+                                search_query: &self.search_query,
+                                selection: &mut self.selection,
+                            };
+                            
+                            render_block(
+                                ui,
+                                &mut ctx,
+                                block,
+                                block_idx,
+                                false,
+                                0,
+                                0,
+                            );
                         }
 
-                        render_block(
-                            ui,
-                            &grid.current_block,
-                            grid.blocks.len(),
+                        let mut ctx = RenderContext {
                             available_width,
-                            &self.input_tx,
-                            true,
-                            grid.cursor_y,
-                            grid.cursor_x,
+                            input_tx: &self.input_tx,
                             prompt_color,
                             now,
                             frame,
-                            &self.search_query,
-                            &mut self.selection,
+                            search_query: &self.search_query,
+                            selection: &mut self.selection,
+                        };
+
+                        render_block(
+                            ui,
+                            &mut ctx,
+                            &grid.current_block,
+                            grid.blocks.len(),
+                            true,
+                            grid.cursor_y,
+                            grid.cursor_x,
                         );
                     });
 
@@ -676,32 +696,24 @@ impl eframe::App for MitosTerminalApp {
 
 fn render_block(
     ui: &mut egui::Ui,
+    ctx: &mut RenderContext<'_>,
     block: &ExecutionBlock,
     block_idx: usize,
-    available_width: f32,
-    input_tx: &mpsc::Sender<u8>,
     is_active: bool,
     cursor_y: usize,
     cursor_x: usize,
-    prompt_color: [u8; 3],
-    _now: f64,
-    frame: u64,
-    search_query: &str,
-    selection: &mut Option<Selection>,
 ) {
-    // FIX: egui 0.28 renamed Frame::new() to Frame::none()
     egui::Frame::none()
         .fill(egui::Color32::from_rgba_unmultiplied(10, 15, 20, 180)) 
         .rounding(6.0)
-        // FIX: Explicit f32 type for stroke width
         .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(45)))
         .inner_margin(8.0)
         .show(ui, |ui| {
-            ui.set_width(available_width - 16.0);
+            ui.set_width(ctx.available_width - 16.0);
 
             ui.label(
                 egui::RichText::new(&block.prompt)
-                    .color(egui::Color32::from_rgb(prompt_color[0], prompt_color[1], prompt_color[2]))
+                    .color(egui::Color32::from_rgb(ctx.prompt_color[0], ctx.prompt_color[1], ctx.prompt_color[2]))
                     .strong()
                     .monospace(),
             );
@@ -727,12 +739,12 @@ fn render_block(
                     let col = col.min(max_col);
                     
                     if block_response.drag_started() {
-                        *selection = Some(Selection {
+                        *ctx.selection = Some(Selection {
                             start_block: block_idx, start_row: row, start_col: col,
                             end_block: block_idx, end_row: row, end_col: col,
                         });
-                    } else if let Some(sel) = selection {
-                        *selection = Some(Selection {
+                    } else if let Some(sel) = ctx.selection {
+                        *ctx.selection = Some(Selection {
                             start_block: sel.start_block, start_row: sel.start_row, start_col: sel.start_col,
                             end_block: block_idx, end_row: row, end_col: col,
                         });
@@ -741,7 +753,7 @@ fn render_block(
             }
 
             for (y, row) in block.cells.iter().enumerate() {
-                let lower_q = search_query.to_lowercase();
+                let lower_q = ctx.search_query.to_lowercase();
                 let row_text: String = row.iter().map(|c| c.character).collect();
                 let lower_row = row_text.to_lowercase();
                 let mut matches = vec![false; row.len()];
@@ -763,13 +775,13 @@ fn render_block(
 
                     for (x, cell) in row.iter().enumerate() {
                         if let Some(widget) = block.widgets.get(&(y, x)) {
-                            render_widget(ui, widget, input_tx);
+                            render_widget(ui, widget, ctx.input_tx);
                             continue;
                         }
 
                         let is_match = matches.get(x).copied().unwrap_or(false);
                         
-                        let is_selected = if let Some(sel) = selection {
+                        let is_selected = if let Some(sel) = ctx.selection {
                             let (min_b, max_b) = if sel.start_block <= sel.end_block { (sel.start_block, sel.end_block) } else { (sel.end_block, sel.start_block) };
                             let (min_r, max_r, min_c, max_c) = if sel.start_block < sel.end_block || (sel.start_block == sel.end_block && sel.start_row <= sel.end_row) {
                                 (sel.start_row, sel.end_row, sel.start_col, sel.end_col)
@@ -828,7 +840,7 @@ fn render_block(
                             let is_err = cell.is_error; 
 
                             let jx = if is_err && t > 0.05 {
-                                ((grid::hash3(x as u64, y as u64, frame) % 3) as f32 - 1.0) * 1.5
+                                ((grid::hash3(x as u64, y as u64, ctx.frame) % 3) as f32 - 1.0) * 1.5
                             } else { 0.0 };
 
                             let center = rect.center();
@@ -952,4 +964,3 @@ fn save_matrix_rain_setting(enabled: bool) {
 
     let _ = std::fs::write(&config_path, content);
 }
-
