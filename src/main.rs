@@ -66,7 +66,7 @@ struct RenderContext<'a> {
     available_width: f32,
     input_tx: &'a mpsc::Sender<u8>,
     prompt_color: [u8; 3],
-    _now: f64,
+    now: f64,
     frame: u64,
     search_query: &'a str,
     selection: &'a mut Option<Selection>,
