@@ -256,7 +256,7 @@ impl TerminalGrid {
     }
 
     fn reflow_block(block: &mut ExecutionBlock, new_cols: usize) {
-        let old_cols = block.cells.get(0).map(|r| r.len()).unwrap_or(0);
+        let old_cols = block.cells.first().map(|r| r.len()).unwrap_or(0);
         let mut flat: Vec<Cell> = Vec::new();
         
         for row in &block.cells {
@@ -357,7 +357,8 @@ impl Perform for TerminalGrid {
                     }
                 }
             }
-            0x0A | 0x0B | 0x0C => { 
+            // Line 360
+             0x0A..=0x0C => { 
                 self.check_line_for_missing_command();
                 self.cursor_y += 1;
                 while self.current_block.cells.len() <= self.cursor_y {
@@ -391,8 +392,8 @@ impl Perform for TerminalGrid {
             }
         } 
         else if action == 'H' || action == 'f' {
-            let y = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&1).saturating_sub(1) as usize;
-            let x = params.iter().nth(1).and_then(|p| p.get(0)).unwrap_or(&1).saturating_sub(1) as usize;
+            let y = params.iter().next().and_then(|p| p.first()).unwrap_or(&1).saturating_sub(1) as usize;
+            let x = params.iter().nth(1).and_then(|p| p.first()).unwrap_or(&1).saturating_sub(1) as usize;
             
             self.cursor_y = y;
             self.cursor_x = x.min(self.cols.saturating_sub(1));
@@ -402,11 +403,14 @@ impl Perform for TerminalGrid {
             }
         }
         else if action == 'K' { 
-            let mode = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&0);
+            let mode = params.iter().next().and_then(|p| p.first()).unwrap_or(&0);
             if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
                 match mode {
                     0 => { 
-                        for i in self.cursor_x..row.len() { row[i] = Cell::default(); }
+                        // Lines 409 & 426
+                        for cell in &mut row[self.cursor_x..] { 
+                        *cell = Cell::default(); 
+                           }
                     }
                     1 => { 
                         for i in 0..=self.cursor_x.min(row.len().saturating_sub(1)) { row[i] = Cell::default(); }
@@ -419,11 +423,15 @@ impl Perform for TerminalGrid {
             }
         }
         else if action == 'J' { 
-            let mode = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&0);
+            let mode = params.iter().next().and_then(|p| p.first()).unwrap_or(&0);
             match mode {
                 0 => { 
                     if let Some(row) = self.current_block.cells.get_mut(self.cursor_y) {
-                        for i in self.cursor_x..row.len() { row[i] = Cell::default(); }
+                        // Lines 409 & 426
+for cell in &mut row[self.cursor_x..] { 
+    *cell = Cell::default(); 
+}
+
                     }
                     self.current_block.cells.truncate(self.cursor_y + 1);
                 }
