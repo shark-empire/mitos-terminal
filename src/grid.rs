@@ -303,6 +303,22 @@ impl TerminalGrid {
     }
 }
 
+/// Rejoin OSC params from `start` onward with `;`. vte's OSC parser
+/// splits the whole sequence on every semicolon, but OSC payloads (a
+/// RichWidget's JSON, a hyperlink URI, a prompt string) can
+/// legitimately contain one -- without this, anything after the
+/// first embedded `;` silently vanishes.
+fn rejoin_osc_params(params: &[&[u8]], start: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (i, part) in params[start..].iter().enumerate() {
+        if i > 0 {
+            out.push(b';');
+        }
+        out.extend_from_slice(part);
+    }
+    out
+}
+
 impl Perform for TerminalGrid {
     fn print(&mut self, c: char) {
         if self.cursor_x >= self.cols {
@@ -445,7 +461,8 @@ impl Perform for TerminalGrid {
         if params.len() >= 3 {
             if let Ok(cmd) = std::str::from_utf8(params[0]) {
                 if cmd == "8" {
-                    let uri = std::str::from_utf8(params[2]).unwrap_or("");
+                    let uri_bytes = rejoin_osc_params(params, 2);
+                    let uri = std::str::from_utf8(&uri_bytes).unwrap_or("");
                     if uri.is_empty() {
                         self.current_link_id = 0; 
                     } else {
@@ -459,7 +476,8 @@ impl Perform for TerminalGrid {
 
         if let Ok(ps) = std::str::from_utf8(params[0]) {
             if ps == OSC_WIDGET && params.len() >= 2 {
-                if let Ok(pt) = std::str::from_utf8(params[1]) {
+                let payload = rejoin_osc_params(params, 1);
+                if let Ok(pt) = std::str::from_utf8(&payload) {
                     if let Ok(widget) = serde_json::from_str::<RichWidget>(pt) {
                         self.current_block.widgets.insert((self.cursor_y, self.cursor_x), widget);
                     }
@@ -467,7 +485,8 @@ impl Perform for TerminalGrid {
             }
             else if ps == OSC_NEW_BLOCK {
                 let prompt = if params.len() >= 2 {
-                    std::str::from_utf8(params[1]).unwrap_or("mitos@user:~$ ").to_string()
+                    let prompt_bytes = rejoin_osc_params(params, 1);
+                    std::str::from_utf8(&prompt_bytes).unwrap_or("mitos@user:~$ ").to_string()
                 } else {
                     "mitos@user:~$ ".to_string()
                 };
