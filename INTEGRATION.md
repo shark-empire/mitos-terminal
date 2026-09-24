@@ -1,19 +1,44 @@
 > ## Implementation status (read this first)
 >
-> Everything below this line was the integration *plan* — most of it
-> wasn't built yet as of when this note was added. Current state:
+> Updated after the September 2026 rewrite (tabs/splits, hardened IPC, real
+> shell-integration scripts, security policy layer, accessibility). Current state:
 >
 > | Integration | Status |
 > |---|---|
-> | `mitos-shell` handoff, `MITOS_TERMINAL_VERSION`/`MITOS_MROP_SUPPORTED` env vars | **Done** — `pty.rs` now checks `$PATH` for `mitos-shell` and falls back to `sh` if it isn't installed yet. |
-> | MROP widget rendering (`OSC_WIDGET`) + block finalization (`OSC_NEW_BLOCK`) | **Done** — was already real when this note was added, ahead of the rest of this document. `grid.rs`'s `osc_dispatch`. |
-> | `mitos-system-monitor` buffer scraping + widget injection over the IPC socket | **Done** — `main.rs`'s `spawn_ipc_server`, `GetTerminalBuffer`/`InjectWidget`. |
-> | `mitos-pkg` "command not found" install button | **Done, but from the terminal's side, not `mitos-shell`'s.** The terminal itself now watches PTY output for a "not found"-shaped line and queries `mitos-pkgd` directly (`pkg_bridge.rs`) — it doesn't wait for `mitos-shell` to emit an MROP button for this specific case. Works today even with plain `sh` running. |
-> | `mitos-settings` theme sync | **Half done.** `ThemeChanged` over IPC now actually recolors the grid (`TerminalGrid::apply_theme`) instead of being a no-op — but nothing calls it yet, since that requires `mitos-settings` itself to connect to this socket and send it, which is outside this repo. Also: only affects new output, not text already on screen (see `apply_theme`'s doc comment for why). |
-> | `mitos-file-manager` ghost prompts / semantic clipboard | **Not done.** `AutoCompletePath` is still a stub. Needs `mitos-file-manager`'s actual IPC protocol, which isn't available to build against yet. |
-> | `mitos-gui` global hotkeys / notifications | **Not done.** Needs `mitos-gui`'s actual compositor-level API for this, which isn't available yet either. |
-> | `mitos-network` captive portal / bandwidth widgets | **Not done.** Same reason — no `mitos-network` protocol to build against. |
-> | `mitos-kernel` TTY fallback | **Not buildable as described.** This app renders via `eframe`/`egui` (OpenGL) — it fundamentally cannot run on a raw text-mode Linux virtual console with no display server. A real recovery-TTY fallback would need a genuinely separate, text-mode-only implementation, not a mode of this one. Worth flagging now rather than treating it as "just not wired up yet."
+> | `mitos-shell` handoff, `MITOS_TERMINAL_VERSION`/`MITOS_TERM_VERSION` env vars | **Done** — `pty.rs::resolve_shell` checks `$PATH` for `mitos-shell` first, then `$SHELL`, then `/bin/sh`. `MITOS_MROP_SUPPORTED` is not currently set (nothing reads it yet; MROP support is unconditional on the terminal's side regardless). |
+> | Real shell integration (OSC 7 working directory + OSC 133 prompt/command marks) for **bash, zsh and fish** | **Done, and new.** `shell-integration/mitos.{bash,zsh,fish}` are embedded in the binary and written to a per-user cache dir at startup (`pty::ensure_integration_files`); bash gets it automatically via `--rcfile`, zsh/fish need one `source` line (see `README.md`). This is what powers prev/next-prompt jump, the command-history list, and "command finished" notifications — none of which existed in the pre-rewrite build. |
+> | MROP widget rendering (`OSC_WIDGET`) + block finalization (`OSC_NEW_BLOCK`) | **Done** — now in `term/perform.rs::osc_mitos`, policy-gated (`[security] widgets`), with a click-to-run confirmation for anything not in `mrop_trusted_prefixes` (`security::sanitize_command`/`is_trusted_command`). |
+> | `mitos-system-monitor`-style buffer scraping + widget injection over the IPC socket | **Done, and hardened.** `ipc.rs`: same-uid peer check (`SO_PEERCRED`), socket mode `0600`, max 8 concurrent clients with a 60s idle timeout, and buffer reads can be switched off entirely (`[security] ipc_buffer_read`). |
+> | `mitos-pkg` "command not found" install button | **Done, from the terminal's side, not `mitos-shell`'s** — unchanged design from before: the terminal watches PTY output for a "not found"-shaped line and queries `mitos-pkgd` directly (`pkg_bridge.rs`), off the UI thread. Works with any shell. |
+> | `mitos-settings` theme sync | **Done, from the terminal's side.** `ThemeChanged` over IPC now takes effect the same frame it arrives (`ipc::Registry::take_theme_override`, applied in `app.rs::resolve_theme_overrides`) — still nothing to send it yet, since `mitos-settings` connecting to this socket is outside this repo. |
+> | `mitos-file-manager` ghost prompts / semantic clipboard | **Client-side plumbing exists; protocol is still unverified.** `ipc::request_autocomplete` connects to `file_manager_socket()` and sets ghost text from the first suggestion if a matching daemon answers — but that daemon's actual IPC shape isn't available to build or test against, so this is best-effort until it exists. Semantic (URI-list) clipboard is not implemented. |
+> | `mitos-gui` global hotkeys / notifications | **Notifications: done** (`ipc::notify_user`, falling back to `notify-send`). **Global/system-wide hotkeys: not done** — needs `mitos-gui`'s compositor-level API, not available yet. In-app shortcuts (new tab, etc.) work today; only OS-wide hotkeys while unfocused are missing. |
+> | `mitos-network` captive portal / bandwidth widgets | **Captive portal: done** — polls `network_socket()` every 3s and injects an "Open Login Page" button (`ipc::spawn_network_poller`). Bandwidth widgets: not implemented (no protocol to build against). |
+> | `mitos-kernel` TTY fallback | **Not buildable as described**, unchanged from before: this is an `eframe`/OpenGL GUI application and cannot run on a display-less virtual console. See `docs/AUDIT.md`. |
+>
+> Also new since the last note: tabs, split panes (with directional focus
+> movement), a command palette, a settings window, WCAG contrast enforcement,
+> reduced-motion support, crash isolation around the screen model, and a
+> from-scratch VT/xterm interpreter (`term/`) replacing the old `grid.rs` —
+> see `docs/AUDIT.md` for the full list against the original spec.
+
+---
+
+🔌 3. Integration Points with MITOS
+To fully integrate this into your  mitos/  ecosystem, you should implement the following bridges:
+	1.	 mitos-settings  Integration:
+	•	Read a config file ( ~/.config/mitos/settings.toml ) on startup to load the user’s preferred  current_fg ,  current_bg , and Font Family into  TerminalGrid  and  egui ’s  FontDefinitions .
+	2.	 mitos-shell  Handoff:
+	•	In  pty.rs , replace  CommandBuilder::new("sh")  with  CommandBuilder::new("mitos-shell") . Pass an environment variable  MITOS_TERMINAL_VERSION=0.1.0  so your shell knows what escape sequences are supported.
+	3.	 mitos-system-monitor  Hooks:
+	•	Because your  TerminalGrid  is isolated and memory-safe, you can expose a public API (via IPC or shared memory) that allows  mitos-system-monitor  to read the terminal’s buffer for features like “search in terminal” or accessibility screen readers.
+
+(⬆ the three bullets above are the *original design note*, kept verbatim for
+history — as the table above shows, all three now have a real implementation:
+`config.rs`+`theme.rs` / `pty.rs::resolve_shell` / `ipc.rs`, respectively. The
+`TerminalGrid` type they refer to was superseded by `term::Term`.)
+
+---
 
 ---
 

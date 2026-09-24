@@ -1,7 +1,16 @@
 [package]
 name = "mitos-terminal"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "MITOS's native terminal emulator"
+
+[lib]
+name = "mitos_terminal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mitos-terminal"
+path = "src/main.rs"
 
 [dependencies]
 portable-pty = "0.8.1"  # Layer 1: Process handling
@@ -19,7 +28,28 @@ mitos-utils = { git = "https://github.com/shark-empire/mitos-utils" }
 # socket protocol.
 mitos-pkg = { git = "https://github.com/shark-empire/mitos-pkg" }
 
-notify = "6.1"          # Hot-reloading terminal.toml
+notify = "6.1"          # Hot-reloading terminal.toml / home.conf
 dirs = "5.0"            # Resolving ~/.config/mitos
-arboard = "3.4"         
+arboard = "3.4"         # Persistent clipboard (+ X11 primary selection)
 open = "5.0"
+
+toml = "0.8"            # terminal.toml (profiles, themes, keybindings, policy)
+libc = "0.2"            # kill(2), signal handling, getuid (already in the tree via portable-pty)
+unicode-width = "0.1"   # Cell widths (CJK / emoji / combining marks)
+
+# Speed is a hard requirement for every MITOS component.
+# NOTE: do not switch to panic = "abort" — session-level crash isolation
+# (catch_unwind around the VT parser) depends on unwinding.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+strip = "symbols"
+
+# egui is unusably slow at opt-level 0; keep dev builds interactive.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
