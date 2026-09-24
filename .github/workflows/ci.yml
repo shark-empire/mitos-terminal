@@ -1,4 +1,4 @@
-name: MITOS Terminal CI
+name: MITOS-Terminal CI
 
 on:
   push:
