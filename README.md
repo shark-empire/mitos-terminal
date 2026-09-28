@@ -30,9 +30,10 @@ src/
   input.rs       keyboard/mouse -> xterm-compatible byte encoding
   security.rs    link policy, paste sanitising, MROP command gating
   config.rs      terminal.toml schema, keybindings, action table
-  theme.rs       palettes, WCAG contrast helpers
+  theme.rs       the Theme Engine: 9 presets, light/dark variants, WCAG helpers
   render.rs      Term -> egui painting (run-coalesced, damage-aware)
-  fx.rs          cinematic effects (matrix rain, scanlines, phosphor glow, sweep)
+  fx.rs          theme effects: glow borders, glass surface, vignette, HUD ticks,
+                  ambient backdrop, plus the cinematic layer (rain, scanlines, sweep)
   layout.rs      tabs & split panes (pure logic, no egui types)
   a11y.rs        announcements, speech, audible bell, contrast enforcement
   ipc.rs         Unix-socket server + clients for the MITOS ecosystem
@@ -79,13 +80,23 @@ shell_integration = true      # inject OSC 7/133 hooks into bash automatically
 size = 14.0
 
 [theme]
-name = "mitos-dark"           # mitos-dark | mitos-light | high-contrast-dark
-                               # | high-contrast-light | solarized-dark
-follow_system = true          # follow ~/.config/mitos/home.conf's theme_mode
+name = "futuristic-scifi"     # futuristic-scifi | cyberpunk | glass-neon | minimal-dark
+                               # | light | classic | retro-crt | high-contrast-dark
+                               # | high-contrast-light | custom
+follow_system = true          # let home.conf's theme_mode swap Sci-Fi <-> Light
+# accent = "#46b8e8"          # any of accent/foreground/background/selection/
+                               # border/surface/glow_color overrides the preset
+
+[appearance]                  # live sliders; a preset only seeds these
+blur = 0.35                   # simulated frosted-glass strength, 0..1
+glow_intensity = 0.35
+corner_radius = 10.0
+tab_style = "rounded"         # rounded | underline | boxed
+status_style = "breadcrumb"   # hidden | minimal | breadcrumb | segmented
 
 [effects]
 enabled = true
-rain = true                   # matrix code rain; omit to follow home.conf
+rain = false                  # matrix code rain (opt-in); omit to follow home.conf
 
 [security]
 osc52_write = true            # let programs write the clipboard (never reads)
@@ -128,6 +139,35 @@ without memorising a chord.
 | `Ctrl+V` / OS paste | Paste | | `Ctrl+Shift+H` | Command history |
 | `Ctrl+Shift+A` | Select all | | `Ctrl+,` | Settings |
 | `Ctrl+Click` | Open link (configurable) | | `F11` | Fullscreen |
+
+## Themes
+
+One terminal, any visual style. The **Theme Engine** (`theme.rs`, `fx.rs`,
+and the theme half of `config.rs`) owns every colour and effect; the
+**Terminal Engine** (`term/`, `pty.rs`, `session.rs`, `input.rs`) never
+imports it. Switching themes only changes what gets painted — never the
+shell, the PTY, or any terminal behaviour.
+
+| Preset | Character |
+|---|---|
+| **Futuristic Sci-Fi** (default) | Dark blue-black, restrained cyan glow, soft glass, small HUD corner ticks |
+| **Cyberpunk** | Charcoal, controlled magenta + cyan, faint technical grid |
+| **Glass Neon** | Frosted glass, low-intensity multi-hue glow, most transparent |
+| **Minimal Dark** | Flat and quiet; no glow, blur or grid |
+| **Light** | Bright, soft colours for daytime |
+| **Classic Terminal** | Plain black, standard 16 colours, zero effects |
+| **Retro CRT** | Green phosphor, scanlines, soft screen-edge falloff |
+| **Custom** | Blank slate — every colour and effect overridable |
+
+Each preset carries *suggested* glow/blur/opacity/corner-radius/tab/status
+settings that are copied into your live settings when you pick it, after
+which the sliders in **Settings → Appearance** are independent of the
+preset ("I love Cyberpunk but want less glow" is just a slider). Every
+colour override under **Advanced colours** works on any preset, not just
+Custom. Accessibility never forces the effects on you: reduced motion,
+high contrast, low-glow, disable transparency, disable blur, and a forced
+light/dark reading of any theme are all in **Settings → Accessibility**,
+and win over the saved sliders without overwriting them.
 
 ## Ecosystem integration
 
