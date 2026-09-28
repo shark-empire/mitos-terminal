@@ -31,7 +31,7 @@ use crate::render::{self, Metrics, PaintOpts};
 use crate::security::{self, LinkDecision, Paste};
 use crate::session::{Session, SessionState};
 use crate::term::{SelMode, SelPoint, Term, TermEvent};
-use crate::theme::Theme;
+use crate::theme::{self, Rgb, StatusStyle, TabStyle, Theme};
 
 const MIN_COLS: usize = 4;
 const MIN_ROWS: usize = 2;
@@ -93,6 +93,9 @@ pub struct TerminalApp {
     fullscreen: bool,
     notify_times: std::collections::VecDeque<f64>,
     last_focused_pane: Option<PaneId>,
+    /// `user@host`, computed once at startup for the status-strip chrome
+    /// (`theme::StatusStyle`) — never touches what the shell prints.
+    user_host: String,
 }
 
 fn new_pane(app_ctx: &egui::Context, config: &Config, home: &HomeConf, cols: usize, rows: usize, profile_name: Option<&str>) -> PaneState {
@@ -109,6 +112,13 @@ fn new_pane(app_ctx: &egui::Context, config: &Config, home: &HomeConf, cols: usi
         shell_integration: config.general.shell_integration,
     };
     let session = Session::spawn(opts, config.scrollback.lines, config.term_policy(), app_ctx.clone());
+    // So OSC 10/11/12 colour *queries* (vim, bat, delta detecting light vs
+    // dark) get the theme actually in effect from the moment this pane
+    // exists, not the Term's hardcoded construction-time fallback.
+    let resolved = config.theme(home);
+    if let Ok(mut t) = session.term().lock() {
+        t.set_theme_colors(resolved.fg, resolved.bg, resolved.cursor, resolved.ansi);
+    }
     let rain = if config.rain_enabled(home) { Some(fx::CodeRain::new(10.0, 0.55)) } else { None };
     PaneState {
         session,
@@ -187,6 +197,7 @@ impl TerminalApp {
             fullscreen: false,
             notify_times: std::collections::VecDeque::new(),
             last_focused_pane: None,
+            user_host: local_user_host(),
         }
     }
 
@@ -201,6 +212,7 @@ impl TerminalApp {
         self.startup_errors.extend(problems);
         self.config = config;
         self.theme = self.config.theme(&self.home);
+        self.sync_theme_colors_to_panes();
         self.keymap = keymap;
         self.font = render::font_id(&self.config.font.family, self.config.font.size);
         self.metrics = render::measure(ctx, &self.font);
@@ -224,6 +236,19 @@ impl TerminalApp {
         if let Some((fg, bg)) = self.registry.take_theme_override() {
             self.theme.fg = fg;
             self.theme.bg = bg;
+            self.sync_theme_colors_to_panes();
+        }
+    }
+
+    /// Push the currently-resolved theme's colours into every live pane's
+    /// `Term`, so OSC 10/11/12 queries answer truthfully after a theme
+    /// change. `new_pane` does this once at creation; this is for "the
+    /// theme changed under panes that already exist".
+    fn sync_theme_colors_to_panes(&self) {
+        for pane in self.panes.values() {
+            if let Ok(mut t) = pane.session.term().lock() {
+                t.set_theme_colors(self.theme.fg, self.theme.bg, self.theme.cursor, self.theme.ansi);
+            }
         }
     }
 
@@ -542,6 +567,47 @@ impl TerminalApp {
     }
 }
 
+/// One settings row: a small colour swatch, a hex text field, and (if an
+/// override is currently set) a Reset button. `fallback` is what the
+/// currently-resolved theme actually uses for this slot, shown whenever no
+/// override is set — never blank, and never wrong once a preset changes.
+/// Returns whether the override changed this frame.
+fn color_override_row(ui: &mut egui::Ui, label: &str, override_field: &mut Option<String>, fallback: Rgb) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let current = override_field.as_deref().and_then(theme::parse_hex).unwrap_or(fallback);
+        let (swatch, _) = ui.allocate_exact_size(egui::Vec2::new(18.0, 18.0), egui::Sense::hover());
+        ui.painter().rect_filled(swatch, 3.0, Color32::from_rgb(current[0], current[1], current[2]));
+        ui.painter().rect_stroke(swatch, 3.0, egui::Stroke::new(1.0, Color32::from_gray(90)));
+        let mut text = override_field.clone().unwrap_or_else(|| theme::to_hex(fallback));
+        if ui.add(egui::TextEdit::singleline(&mut text).desired_width(72.0)).changed() {
+            if theme::parse_hex(&text).is_some() {
+                *override_field = Some(text);
+                changed = true;
+            }
+        }
+        if override_field.is_some() && ui.small_button("Reset").clicked() {
+            *override_field = None;
+            changed = true;
+        }
+    });
+    changed
+}
+
+/// `user@host` for the status-strip chrome. Best-effort: an empty piece is
+/// simply omitted rather than shown as "unknown".
+fn local_user_host() -> String {
+    let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_default();
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string()).unwrap_or_default();
+    match (user.is_empty(), host.is_empty()) {
+        (false, false) => format!("{user}@{host}"),
+        (false, true) => user,
+        (true, false) => host,
+        (true, true) => "mitos".to_string(),
+    }
+}
+
 fn short_cmd(cmd: &str) -> String {
     let mut s = cmd.split_whitespace().next().unwrap_or(cmd).to_string();
     s.truncate(40);
@@ -652,35 +718,45 @@ impl eframe::App for TerminalApp {
 
         // ----- tab bar -------------------------------------------------
         if self.config.general.tab_bar == "always" || (self.config.general.tab_bar == "auto" && self.layout.tabs().len() > 1) {
-            egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let active = self.layout.active_index();
-                    let mut goto: Option<usize> = None;
-                    let mut close: Option<PaneId> = None;
-                    for (i, tab) in self.layout.tabs().iter().enumerate() {
-                        let label = tab.title.clone().unwrap_or_else(|| {
-                            self.pane_title(tab.focused()).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("Tab {}", i + 1))
-                        });
-                        if ui.selectable_label(i == active, label).clicked() {
-                            goto = Some(i + 1);
+            let surface = self.theme.surface;
+            let border = self.theme.border;
+            let accent = self.theme.accent;
+            let tab_style = self.config.appearance.tab_style();
+            egui::TopBottomPanel::top("tab_bar")
+                .frame(egui::Frame::none().fill(Color32::from_rgb(surface[0], surface[1], surface[2])).inner_margin(egui::Margin::symmetric(8.0, 6.0)))
+                .show(ctx, |ui| {
+                    ui.visuals_mut().selection.bg_fill = Color32::from_rgba_unmultiplied(accent[0], accent[1], accent[2], 60);
+                    ui.horizontal(|ui| {
+                        let active = self.layout.active_index();
+                        let mut goto: Option<usize> = None;
+                        let mut close: Option<PaneId> = None;
+                        for (i, tab) in self.layout.tabs().iter().enumerate() {
+                            let label = tab.title.clone().unwrap_or_else(|| {
+                                self.pane_title(tab.focused()).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("Tab {}", i + 1))
+                            });
+                            let is_active = i == active;
+                            let resp = ui.selectable_label(is_active, label);
+                            paint_tab_decoration(ui, &resp, tab_style, is_active, accent, border);
+                            if resp.clicked() {
+                                goto = Some(i + 1);
+                            }
+                            if ui.small_button("\u{2716}").clicked() {
+                                close = Some(tab.focused());
+                            }
+                            ui.add_space(4.0);
                         }
-                        if ui.small_button("\u{2716}").clicked() {
-                            close = Some(tab.focused());
+                        if ui.button("+").on_hover_text("New tab (Ctrl+Shift+T)").clicked() {
+                            self.new_pane_in_active_tab(ctx, None);
                         }
-                        ui.separator();
-                    }
-                    if ui.button("+").clicked() {
-                        self.new_pane_in_active_tab(ctx, None);
-                    }
-                    if let Some(g) = goto {
-                        self.layout.goto_tab(g);
-                        self.registry.set_active(self.layout.focused_pane());
-                    }
-                    if let Some(p) = close {
-                        self.request_close_pane(ctx, p);
-                    }
+                        if let Some(g) = goto {
+                            self.layout.goto_tab(g);
+                            self.registry.set_active(self.layout.focused_pane());
+                        }
+                        if let Some(p) = close {
+                            self.request_close_pane(ctx, p);
+                        }
+                    });
                 });
-            });
         }
 
         // ----- settings gear + status ------------------------------------
@@ -694,7 +770,7 @@ impl eframe::App for TerminalApp {
 
         // ----- central panel: the pane grid --------------------------------
         let bg = self.theme.bg;
-        let panel_alpha = (self.config.window.opacity.clamp(0.1, 1.0) * 255.0) as u8;
+        let panel_alpha = (self.config.effective_opacity() * 255.0) as u8;
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], panel_alpha)))
             .show(ctx, |ui| {
@@ -704,10 +780,19 @@ impl eframe::App for TerminalApp {
                 let mut any_animating = false;
                 let hover_pos = ctx.input(|i| i.pointer.hover_pos());
                 let effects = self.config.effects.clone();
+                let theme_colors = self.theme.clone();
                 let accent = self.theme.accent;
                 let reduced = self.config.reduced_motion(&self.home);
                 let unfocused_hollow = self.config.cursor.unfocused == "hollow";
                 let thickness = self.config.cursor.thickness;
+                let padding = self.config.window.padding;
+                let corner_radius = self.config.appearance.corner_radius;
+                let window_opacity = self.config.effective_opacity();
+                let blur = self.config.effective_blur();
+                let glow_intensity = self.config.effective_glow();
+                let vignette = self.config.appearance.vignette;
+                let hud_accents = self.config.appearance.hud_accents;
+                let wallpaper_enabled = self.config.appearance.wallpaper_enabled;
 
                 for (pane_id, nr) in rects {
                     let px = ERect::from_min_max(
@@ -718,8 +803,9 @@ impl eframe::App for TerminalApp {
                         continue;
                     }
 
-                    let cols = ((px.width() / cell.char_w).floor() as usize).max(MIN_COLS);
-                    let rows = ((px.height() / cell.row_h).floor() as usize).max(MIN_ROWS);
+                    let pad = padding.max(0.0).min(px.width() * 0.4).min(px.height() * 0.4);
+                    let cols = (((px.width() - 2.0 * pad) / cell.char_w).floor() as usize).max(MIN_COLS);
+                    let rows = (((px.height() - 2.0 * pad) / cell.row_h).floor() as usize).max(MIN_ROWS);
                     if let Some(pane) = self.panes.get(&pane_id) {
                         pane.session.resize(cols, rows, 0, 0);
                     }
@@ -738,8 +824,8 @@ impl eframe::App for TerminalApp {
                     let focused = self.layout.focused_pane() == pane_id;
 
                     let hover_cell = hover_pos.filter(|_| px.contains(hover_pos.unwrap())).map(|p| {
-                        let c = ((p.x - px.left()) / cell.char_w).floor().max(0.0) as usize;
-                        let r = ((p.y - px.top()) / cell.row_h).floor().max(0.0) as usize;
+                        let c = ((p.x - px.left() - pad) / cell.char_w).floor().max(0.0) as usize;
+                        let r = ((p.y - px.top() - pad) / cell.row_h).floor().max(0.0) as usize;
                         (c.min(cols.saturating_sub(1)), r.min(rows.saturating_sub(1)))
                     });
                     if let Some(pane) = self.panes.get_mut(&pane_id) {
@@ -755,7 +841,7 @@ impl eframe::App for TerminalApp {
                         let term_arc = pane.session.term();
                         if let Ok(mut term) = term_arc.lock() {
                             let opts = PaintOpts {
-                                theme: &self.theme,
+                                theme: &theme_colors,
                                 metrics: cell,
                                 font: self.font.clone(),
                                 focused,
@@ -768,6 +854,17 @@ impl eframe::App for TerminalApp {
                                 accent,
                                 now,
                                 hover_cell: pane.hover_cell,
+                                padding,
+                                corner_radius,
+                                window_opacity,
+                                blur,
+                                glow_intensity,
+                                vignette,
+                                hud_accents,
+                                wallpaper_enabled,
+                                pane_seed: pane_id,
+                                status_style: self.config.appearance.status_style(),
+                                user_host: &self.user_host,
                             };
                             if render::paint_pane(ui, px, &mut term, &opts, pane.rain.as_mut(), dt) {
                                 any_animating = true;
@@ -776,7 +873,8 @@ impl eframe::App for TerminalApp {
                     }
 
                     if rects_len(&self.layout, pane_id) > 1 {
-                        ui.painter().rect_stroke(px, 0.0, egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(accent[0], accent[1], accent[2], 40)));
+                        let b = theme_colors.border;
+                        ui.painter().rect_stroke(px, corner_radius, egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(b[0], b[1], b[2], 90)));
                     }
                 }
 
@@ -809,11 +907,40 @@ fn rects_len(layout: &Layout, pane: PaneId) -> usize {
     layout.tabs().iter().find(|t| t.panes().contains(&pane)).map(|t| t.panes().len()).unwrap_or(1)
 }
 
+/// Extra per-`TabStyle` decoration drawn around a tab's `selectable_label`
+/// response — `Underline` gets an accent bar under the active tab, `Boxed`
+/// gets a full border on every tab, `Rounded` relies on the accent-tinted
+/// selection fill already applied to the whole tab bar and needs nothing extra.
+fn paint_tab_decoration(ui: &egui::Ui, resp: &egui::Response, style: TabStyle, active: bool, accent: Rgb, border: Rgb) {
+    match style {
+        TabStyle::Rounded => {}
+        TabStyle::Underline => {
+            if active {
+                let r = resp.rect;
+                let y = r.bottom() + 2.0;
+                ui.painter().line_segment(
+                    [egui::Pos2::new(r.left(), y), egui::Pos2::new(r.right(), y)],
+                    egui::Stroke::new(2.0, Color32::from_rgb(accent[0], accent[1], accent[2])),
+                );
+            }
+        }
+        TabStyle::Boxed => {
+            let a = if active { 160 } else { 70 };
+            ui.painter().rect_stroke(resp.rect.expand(3.0), 2.0, egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(border[0], border[1], border[2], a)));
+        }
+    }
+}
+
 impl TerminalApp {
     fn handle_pane_mouse(&mut self, ctx: &egui::Context, resp: &egui::Response, pane_id: PaneId, px: ERect, cell: Metrics, cols: usize, _rows: usize) {
+        // Same padding math as the paint loop in `update()` — the text grid
+        // is inset from the pane's own rect by `[window] padding`, so mouse
+        // coordinates need the same offset subtracted before they line up
+        // with a column/row.
+        let pad = self.config.window.padding.max(0.0).min(px.width() * 0.4).min(px.height() * 0.4);
         let cell_of = |p: Pos2| -> (usize, usize) {
-            let c = ((p.x - px.left()) / cell.char_w).floor().max(0.0) as usize;
-            let r = ((p.y - px.top()) / cell.row_h).floor().max(0.0) as usize;
+            let c = ((p.x - px.left() - pad) / cell.char_w).floor().max(0.0) as usize;
+            let r = ((p.y - px.top() - pad) / cell.row_h).floor().max(0.0) as usize;
             (c.min(cols.saturating_sub(1)), r)
         };
         let sel_cfg = self.config.selection.clone();
@@ -1015,72 +1142,227 @@ impl TerminalApp {
         }
         let mut open = true;
         let mut save = false;
-        egui::Window::new("\u{2699}\u{FE0F} MITOS Terminal Settings").collapsible(false).resizable(false).open(&mut open).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.heading("Appearance");
-            ui.separator();
-            egui::ComboBox::from_label("Theme").selected_text(self.config.theme.name.clone()).show_ui(ui, |ui| {
-                for name in Theme::names() {
-                    if ui.selectable_label(self.config.theme.name == *name, *name).clicked() {
-                        self.config.theme.name = name.to_string();
+        let resolved = self.theme.clone();
+        egui::Window::new("\u{2699}\u{FE0F} MITOS Terminal Settings")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(420.0)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().max_height(560.0).show(ui, |ui| {
+                    ui.heading("Theme");
+                    ui.separator();
+                    egui::ComboBox::from_label("Preset")
+                        .selected_text(resolved.label.clone())
+                        .show_ui(ui, |ui| {
+                            for (id, label) in Theme::names() {
+                                if ui.selectable_label(self.config.theme.name == *id, *label).clicked() {
+                                    self.config.apply_theme_preset(id);
+                                    save = true;
+                                }
+                            }
+                        });
+                    ui.label(egui::RichText::new(resolved.tagline.as_str()).weak().italics());
+                    if ui.checkbox(&mut self.config.theme.follow_system, "Follow system light/dark (Sci-Fi \u{2194} Light only)").changed() {
                         save = true;
                     }
-                }
+
+                    ui.add_space(6.0);
+                    ui.heading("Appearance");
+                    ui.separator();
+                    if ui.add(egui::Slider::new(&mut self.config.window.opacity, 0.1..=1.0).text("Opacity / transparency")).changed() {
+                        save = true;
+                    }
+                    if ui.add(egui::Slider::new(&mut self.config.appearance.blur, 0.0..=1.0).text("Background blur (glass)")).changed() {
+                        save = true;
+                    }
+                    if ui.add(egui::Slider::new(&mut self.config.appearance.glow_intensity, 0.0..=1.0).text("Glow intensity")).changed() {
+                        save = true;
+                    }
+                    if ui.add(egui::Slider::new(&mut self.config.appearance.corner_radius, 0.0..=32.0).text("Corner radius")).changed() {
+                        save = true;
+                    }
+                    if ui.add(egui::Slider::new(&mut self.config.window.padding, 0.0..=64.0).text("Padding")).changed() {
+                        save = true;
+                    }
+                    if ui.add(egui::Slider::new(&mut self.config.appearance.vignette, 0.0..=1.0).text("Vignette (CRT-style edge falloff)")).changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.appearance.hud_accents, "HUD corner accents").changed() {
+                        save = true;
+                    }
+                    egui::ComboBox::from_label("Tab appearance")
+                        .selected_text(self.config.appearance.tab_style.clone())
+                        .show_ui(ui, |ui| {
+                            for s in [TabStyle::Rounded, TabStyle::Underline, TabStyle::Boxed] {
+                                if ui.selectable_label(self.config.appearance.tab_style() == s, s.as_str()).clicked() {
+                                    self.config.appearance.tab_style = s.as_str().to_string();
+                                    save = true;
+                                }
+                            }
+                        });
+                    egui::ComboBox::from_label("Prompt / status style")
+                        .selected_text(self.config.appearance.status_style.clone())
+                        .show_ui(ui, |ui| {
+                            for s in [StatusStyle::Hidden, StatusStyle::Minimal, StatusStyle::Breadcrumb, StatusStyle::Segmented] {
+                                if ui.selectable_label(self.config.appearance.status_style() == s, s.as_str()).clicked() {
+                                    self.config.appearance.status_style = s.as_str().to_string();
+                                    save = true;
+                                }
+                            }
+                        });
+                    if ui.checkbox(&mut self.config.appearance.wallpaper_enabled, "Ambient backdrop behind glass surfaces").changed() {
+                        save = true;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.heading("Font & cursor");
+                    ui.separator();
+                    if ui.add(egui::Slider::new(&mut self.config.font.size, config::MIN_FONT..=config::MAX_FONT).text("Font size")).changed() {
+                        save = true;
+                    }
+                    egui::ComboBox::from_label("Cursor style")
+                        .selected_text(self.config.cursor.style.clone())
+                        .show_ui(ui, |ui| {
+                            for s in ["block", "underline", "bar"] {
+                                if ui.selectable_label(self.config.cursor.style == s, s).clicked() {
+                                    self.config.cursor.style = s.to_string();
+                                    save = true;
+                                }
+                            }
+                        });
+                    if ui.checkbox(&mut self.config.cursor.blink, "Cursor blink").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.effects.enabled, "Animations").changed() {
+                        save = true;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.collapsing("Advanced colours (override this theme)", |ui| {
+                        ui.label(egui::RichText::new("Overrides apply on top of the preset above and follow it until you switch presets.").weak());
+                        if color_override_row(ui, "Accent", &mut self.config.theme.accent, resolved.accent) {
+                            save = true;
+                        }
+                        if color_override_row(ui, "Foreground", &mut self.config.theme.foreground, resolved.fg) {
+                            save = true;
+                        }
+                        if color_override_row(ui, "Background", &mut self.config.theme.background, resolved.bg) {
+                            save = true;
+                        }
+                        if color_override_row(ui, "Selection", &mut self.config.theme.selection, resolved.selection) {
+                            save = true;
+                        }
+                        if color_override_row(ui, "Border", &mut self.config.theme.border, resolved.border) {
+                            save = true;
+                        }
+                        if color_override_row(ui, "Surface", &mut self.config.theme.surface, resolved.surface) {
+                            save = true;
+                        }
+                        if color_override_row(ui, "Glow", &mut self.config.theme.glow_color, resolved.glow) {
+                            save = true;
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.heading("Accessibility");
+                    ui.separator();
+                    if ui.checkbox(&mut self.config.accessibility.high_contrast, "High contrast").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.accessibility.reduced_motion, "Reduce motion").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.accessibility.low_glow, "Low-glow mode").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.accessibility.disable_transparency, "Disable transparency").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.accessibility.disable_blur, "Disable background blur").changed() {
+                        save = true;
+                    }
+                    let scheme_label = match self.config.accessibility.color_scheme.as_deref() {
+                        Some("light") => "Light",
+                        Some("dark") => "Dark",
+                        _ => "Follow preset",
+                    };
+                    egui::ComboBox::from_label("Colour scheme").selected_text(scheme_label).show_ui(ui, |ui| {
+                        if ui.selectable_label(self.config.accessibility.color_scheme.is_none(), "Follow preset").clicked() {
+                            self.config.accessibility.color_scheme = None;
+                            save = true;
+                        }
+                        if ui.selectable_label(self.config.accessibility.color_scheme.as_deref() == Some("light"), "Light").clicked() {
+                            self.config.accessibility.color_scheme = Some("light".to_string());
+                            save = true;
+                        }
+                        if ui.selectable_label(self.config.accessibility.color_scheme.as_deref() == Some("dark"), "Dark").clicked() {
+                            self.config.accessibility.color_scheme = Some("dark".to_string());
+                            save = true;
+                        }
+                    });
+                    if ui.checkbox(&mut self.config.accessibility.speak_output, "Speak notifications (needs speech-dispatcher)").changed() {
+                        save = true;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.heading("Effects");
+                    ui.separator();
+                    let mut rain_on = self.config.effects.rain.unwrap_or(false);
+                    if ui.checkbox(&mut rain_on, "Matrix code rain").changed() {
+                        self.config.effects.rain = Some(rain_on);
+                        crate::config::HomeConf::save_matrix_rain(rain_on);
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.effects.grid, "Technical grid overlay").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.effects.scanlines, "CRT scanlines").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.effects.phosphor, "Phosphor glow on new text").changed() {
+                        save = true;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.heading("Security");
+                    ui.separator();
+                    if ui.checkbox(&mut self.config.security.osc52_write, "Allow programs to write the clipboard (OSC 52)").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.security.widgets, "Allow programs to show interactive widgets").changed() {
+                        save = true;
+                    }
+
+                    ui.add_space(6.0);
+                    if !self.startup_errors.is_empty() {
+                        ui.separator();
+                        ui.colored_label(Color32::from_rgb(230, 120, 90), "Configuration warnings:");
+                        for e in &self.startup_errors {
+                            ui.label(format!("\u{2022} {e}"));
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Saved automatically to ~/.config/mitos/terminal.toml").weak());
+                });
             });
-            if ui.add(egui::Slider::new(&mut self.config.font.size, config::MIN_FONT..=config::MAX_FONT).text("Font size")).changed() {
-                save = true;
-            }
-            ui.separator();
-            ui.heading("Effects");
-            let mut rain_on = self.config.effects.rain.unwrap_or(true);
-            if ui.checkbox(&mut rain_on, "Matrix code rain").changed() {
-                self.config.effects.rain = Some(rain_on);
-                crate::config::HomeConf::save_matrix_rain(rain_on);
-                save = true;
-            }
-            if ui.checkbox(&mut self.config.effects.scanlines, "CRT scanlines").changed() {
-                save = true;
-            }
-            if ui.checkbox(&mut self.config.effects.phosphor, "Phosphor glow on new text").changed() {
-                save = true;
-            }
-            ui.separator();
-            ui.heading("Accessibility");
-            if ui.checkbox(&mut self.config.accessibility.high_contrast, "High contrast").changed() {
-                save = true;
-            }
-            if ui.checkbox(&mut self.config.accessibility.reduced_motion, "Reduce motion").changed() {
-                save = true;
-            }
-            if ui.checkbox(&mut self.config.accessibility.speak_output, "Speak notifications (needs speech-dispatcher)").changed() {
-                save = true;
-            }
-            ui.separator();
-            ui.heading("Security");
-            if ui.checkbox(&mut self.config.security.osc52_write, "Allow programs to write the clipboard (OSC 52)").changed() {
-                save = true;
-            }
-            if ui.checkbox(&mut self.config.security.widgets, "Allow programs to show interactive widgets").changed() {
-                save = true;
-            }
-            ui.separator();
-            if !self.startup_errors.is_empty() {
-                ui.colored_label(Color32::from_rgb(230, 120, 90), "Configuration warnings:");
-                for e in &self.startup_errors {
-                    ui.label(format!("\u{2022} {e}"));
-                }
-            }
-            ui.add_space(6.0);
-            ui.label("Saved automatically to ~/.config/mitos/terminal.toml");
-        });
         self.show_settings = open;
         if save {
             self.config.sanitize();
             let _ = self.config.save();
             self.theme = self.config.theme(&self.home);
+            self.sync_theme_colors_to_panes();
             self.font = render::font_id(&self.config.font.family, self.config.font.size);
             self.metrics = render::measure(ctx, &self.font);
             self.metrics_font_size = self.config.font.size;
+            let want_rain = self.config.rain_enabled(&self.home);
             for pane in self.panes.values_mut() {
+                match (want_rain, &pane.rain) {
+                    (true, None) => pane.rain = Some(fx::CodeRain::new(10.0, 0.55)),
+                    (false, Some(_)) => pane.rain = None,
+                    _ => {}
+                }
                 let policy = self.config.term_policy();
                 if let Ok(mut t) = pane.session.term().lock() {
                     t.set_policy(policy);

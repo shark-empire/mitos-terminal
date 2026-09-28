@@ -161,22 +161,86 @@ pub struct PaintOpts<'a> {
     pub now: f64,
     /// Screen coordinates of the mouse, if hovering this pane (for link underline-on-hover).
     pub hover_cell: Option<(usize, usize)>,
+
+    // ----- Theme Engine chrome (see `theme.rs`, `Config::effective_*`) ---
+    /// Breathing room between the pane's outer edge and its text grid
+    /// (`[window] padding`). The glow border, vignette and HUD accents live
+    /// in this margin; the text grid itself starts inset by this amount.
+    pub padding: f32,
+    pub corner_radius: f32,
+    /// Effective window opacity (`Config::effective_opacity`) — already has
+    /// `[accessibility] disable_transparency` applied.
+    pub window_opacity: f32,
+    /// Effective simulated-glass strength (`Config::effective_blur`) — 0 = flat.
+    pub blur: f32,
+    /// Effective glow intensity (`Config::effective_glow`) — 0 = no glow.
+    pub glow_intensity: f32,
+    pub vignette: f32,
+    pub hud_accents: bool,
+    /// Draw `fx::paint_ambient_backdrop` under a glass surface (`blur > 0`).
+    pub wallpaper_enabled: bool,
+    /// Stable per-pane seed for the (deliberately static — see `fx.rs`)
+    /// ambient backdrop, so it doesn't reshuffle every frame or every pane.
+    pub pane_seed: u64,
+    /// Terminal-drawn status/breadcrumb strip — independent of the shell's
+    /// own `$PS1` (see `theme::StatusStyle`). Drawn inside the padding
+    /// margin, so it never changes how many columns/rows fit; skipped
+    /// automatically if the margin is too thin for it to read cleanly.
+    pub status_style: crate::theme::StatusStyle,
+    pub user_host: &'a str,
 }
 
-/// Paints one pane's grid, cursor, selection and effects into `rect`.
-/// Returns the on-screen rect of each OSC-8/plain-text URL under the mouse
-/// (for the caller to draw a click affordance / show a tooltip) and whether
-/// any per-frame animation is still in flight (so the caller knows to keep
-/// requesting repaints).
+/// Paints one pane's chrome (glass/glow/vignette/HUD accents), grid, cursor,
+/// selection and effects into `rect`. Returns whether any per-frame
+/// animation is still in flight (so the caller knows to keep requesting
+/// repaints) — the static ambient backdrop deliberately does *not* count.
 pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintOpts, rain: Option<&mut fx::CodeRain>, dt: f32) -> bool {
     let painter = ui.painter().with_clip_rect(rect);
     let theme = opts.theme;
     let m = opts.metrics;
     let mut animating = false;
 
-    // Background (glass/opacity handled by the caller compositing the window;
-    // this is the pane's own flat fill so text is always legible).
-    painter.rect_filled(rect, 0.0, c32(theme.bg));
+    // ----- outer chrome: ambient backdrop, glass/flat surface, glow, vignette, HUD ticks
+    let base_solid = (255.0 * opts.window_opacity.clamp(0.0, 1.0)) as u8;
+    if opts.blur > 0.01 {
+        if opts.wallpaper_enabled {
+            fx::paint_ambient_backdrop(&painter, rect, opts.pane_seed, theme.bg, theme.accent, theme.glow);
+        }
+        let surface_alpha = ((base_solid as f32) * (1.0 - opts.blur * 0.55)).max(40.0) as u8;
+        fx::paint_glass_surface(&painter, rect, opts.corner_radius, theme.surface, surface_alpha);
+    } else {
+        painter.rect_filled(rect, opts.corner_radius, Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], base_solid));
+    }
+    let glow_mul = if opts.focused { 1.0 } else { 0.45 };
+    fx::paint_glow_border(&painter, rect, opts.corner_radius, theme.glow, opts.glow_intensity * glow_mul);
+    fx::paint_vignette(&painter, rect, opts.vignette);
+    if opts.hud_accents && opts.focused {
+        fx::paint_hud_accents(&painter, rect, theme.accent, 130);
+    }
+
+    // A near-opaque floor behind the text grid itself: the chrome above may
+    // be glassy, but "text remains extremely readable" (brief) is not
+    // negotiable, so the reading area never inherits the full transparency.
+    // Padding is capped relative to the pane's own size so a large
+    // `[window] padding` on a small pane can never invert the rect.
+    let pad = opts.padding.max(0.0).min(rect.width() * 0.4).min(rect.height() * 0.4);
+    let text_area = rect.shrink(pad);
+    let legibility_alpha = (base_solid as f32).max(232.0) as u8;
+    painter.rect_filled(text_area, (opts.corner_radius - pad).max(0.0), Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], legibility_alpha));
+
+    // Terminal-drawn status/breadcrumb strip (`theme::StatusStyle`),
+    // independent of the shell's own prompt: drawn inside the top padding
+    // margin so it never takes space away from the character grid, and
+    // skipped automatically when that margin is too thin to read cleanly.
+    if opts.status_style != crate::theme::StatusStyle::Hidden && pad >= 12.0 {
+        paint_status_strip(&painter, ERect::from_min_max(rect.left_top(), Pos2::new(rect.right(), text_area.top())), theme, opts, term.cwd());
+    }
+
+    // Everything below this point already addresses its drawing relative to
+    // `rect` — shadow it with the padded text area so the whole existing
+    // grid/cursor/selection/widget painting logic lines up with the
+    // legibility floor above without having to touch each call site.
+    let rect = text_area;
 
     if let Some(rain) = rain {
         rain.tick(dt.max(0.0).min(0.25), rect);
@@ -187,9 +251,9 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
     if opts.effects.enabled {
         if opts.effects.grid {
             fx::paint_grid(&painter, rect, opts.now, theme.accent);
-        }
-        if !opts.reduced_motion {
-            animating = true;
+            if !opts.reduced_motion {
+                animating = true;
+            }
         }
     }
 
@@ -350,8 +414,51 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
     animating
 }
 
-fn brighten(rgb: Rgb) -> Rgb {
-    mix(rgb, [255, 255, 255], 0.35)
+/// The terminal-drawn status/breadcrumb strip — see `theme::StatusStyle`.
+/// Never touches what the shell prints; purely cosmetic chrome drawn in the
+/// pane's own padding margin.
+fn paint_status_strip(p: &egui::Painter, strip: ERect, theme: &Theme, opts: &PaintOpts, cwd: Option<&str>) {
+    use crate::theme::StatusStyle;
+    if strip.height() < 10.0 {
+        return;
+    }
+    let small = FontId::new((opts.font.size * 0.72).max(9.0), opts.font.family.clone());
+    let cwd_txt = cwd.unwrap_or("~");
+    let y = strip.center().y;
+    let left = strip.left() + 6.0;
+    match opts.status_style {
+        StatusStyle::Hidden => {}
+        StatusStyle::Minimal => {
+            let text = format!("{}  \u{2022}  {}", opts.user_host, cwd_txt);
+            p.text(Pos2::new(left, y), Align2::LEFT_CENTER, text, small, c32(mix(theme.fg, theme.bg, 0.45)));
+        }
+        StatusStyle::Breadcrumb => {
+            let text = format!("[ {} ]-[ {} ]", opts.user_host, cwd_txt);
+            p.text(Pos2::new(left, y), Align2::LEFT_CENTER, text, small, c32(theme.prompt));
+        }
+        StatusStyle::Segmented => {
+            let pad_x = 7.0;
+            let h = (strip.height() - 6.0).max(12.0).min(20.0);
+            let y0 = y - h / 2.0;
+            let mut x = left;
+            for (text, bg, fg) in [(opts.user_host.to_string(), theme.accent, theme.cursor_text), (cwd_txt.to_string(), theme.surface_alt, theme.fg)] {
+                if text.is_empty() {
+                    continue;
+                }
+                // A precise text-measurement pass isn't worth reaching back
+                // into `Fonts` for here: a monospace-ish width estimate is
+                // more than good enough for sizing a small chrome pill.
+                let w = text.chars().count() as f32 * small.size * 0.62 + pad_x * 2.0;
+                let seg = ERect::from_min_size(Pos2::new(x, y0), egui::Vec2::new(w, h));
+                p.rect_filled(seg, h * 0.4, Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], 210));
+                p.text(seg.center(), Align2::CENTER_CENTER, text, small.clone(), c32(fg));
+                x += w + 5.0;
+            }
+        }
+    }
+}
+
+fn brighten(rgb: Rgb) -> Rgb {    mix(rgb, [255, 255, 255], 0.35)
 }
 
 fn paint_underline(painter: &egui::Painter, cell_rect: ERect, run: &Run, _theme: &Theme) {

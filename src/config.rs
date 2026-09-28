@@ -83,11 +83,13 @@ impl Default for FontCfg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowCfg {
+    /// Live window opacity (0.1..=1.0) — this is the actual value painted
+    /// every frame. A theme preset only *seeds* it on selection
+    /// (`Config::apply_theme_preset`); from then on this slider is
+    /// authoritative. See `Config::effective_opacity` for how the
+    /// "disable transparency" accessibility flag interacts with it.
     pub opacity: f32,
-    /// Frosted-glass look: tinted translucent background with a soft highlight.
-    pub glass: bool,
-    /// Ask the compositor to blur what is behind the window (X11/KWin-style; see docs).
-    pub blur: bool,
+    /// Inner breathing room between a pane's edge and its text grid.
     pub padding: f32,
     pub decorations: bool,
     pub width: f32,
@@ -96,7 +98,7 @@ pub struct WindowCfg {
 
 impl Default for WindowCfg {
     fn default() -> Self {
-        WindowCfg { opacity: 1.0, glass: false, blur: false, padding: 6.0, decorations: true, width: 1000.0, height: 650.0 }
+        WindowCfg { opacity: 1.0, padding: 8.0, decorations: true, width: 1000.0, height: 650.0 }
     }
 }
 
@@ -148,9 +150,19 @@ impl Default for ScrollCfg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeCfg {
+    /// Preset slug — see `theme::THEME_PRESETS`. `"custom"` starts from a
+    /// blank slate and expects most of the fields below to be set.
     pub name: String,
-    /// Let `home.conf`'s `theme_mode` switch between mitos-dark / mitos-light.
+    /// Let `home.conf`'s `theme_mode` switch between the futuristic-scifi
+    /// default and the Light preset. Only applies when one of those two is
+    /// selected — an explicit choice like Cyberpunk is never silently swapped.
     pub follow_system: bool,
+    /// Every field below is a *generic* override layered onto whichever
+    /// preset is active (including Custom) — the same mechanism that makes
+    /// "I like Cyberpunk but want a different accent" a one-line change
+    /// rather than a theme fork. `Config::apply_theme_preset` clears all of
+    /// them when the user switches presets, so leftover overrides never
+    /// leak from one theme into the next.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,13 +171,90 @@ pub struct ThemeCfg {
     pub background: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glow_color: Option<String>,
     /// Optional 16 `#rrggbb` entries replacing the ANSI palette.
     pub palette: Vec<String>,
 }
 
 impl Default for ThemeCfg {
     fn default() -> Self {
-        ThemeCfg { name: "mitos-dark".into(), follow_system: true, accent: None, foreground: None, background: None, selection: None, palette: Vec::new() }
+        ThemeCfg {
+            name: "futuristic-scifi".into(),
+            follow_system: true,
+            accent: None,
+            foreground: None,
+            background: None,
+            selection: None,
+            border: None,
+            surface: None,
+            glow_color: None,
+            palette: Vec::new(),
+        }
+    }
+}
+
+/// The Theme Engine's *live* effect knobs — what the Appearance settings
+/// panel's sliders actually move. A preset only seeds these on selection
+/// (`Config::apply_theme_preset`); after that, they're independent of theme
+/// choice, exactly like `[window] opacity`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppearanceCfg {
+    pub corner_radius: f32,
+    /// 0 = no glow .. 1 = the theme's strongest tasteful glow. See
+    /// `Config::effective_glow` for how "low-glow mode" interacts with this.
+    pub glow_intensity: f32,
+    /// 0 = flat solid surfaces .. 1 = full frosted-glass treatment
+    /// (simulated: this app can't blur the real desktop behind it without
+    /// compositor support, so "blur" here means a layered translucent
+    /// surface plus the ambient backdrop below it — see `fx.rs`).
+    pub blur: f32,
+    /// 0 = none .. 1 = strong darkened-corner falloff (CRT-style curvature).
+    pub vignette: f32,
+    /// Small corner tick-mark accents on the focused pane.
+    pub hud_accents: bool,
+    /// `"rounded"`, `"underline"` or `"boxed"` — see `theme::TabStyle`.
+    pub tab_style: String,
+    /// `"hidden"`, `"minimal"`, `"breadcrumb"` or `"segmented"` — see `theme::StatusStyle`.
+    pub status_style: String,
+    /// Draw a soft procedural ambient backdrop behind glass-style surfaces
+    /// (only visible where `blur` > 0). Independent of `wallpaper_path`.
+    pub wallpaper_enabled: bool,
+    /// An image file to use as that backdrop instead of the procedural one.
+    /// Falls back to the procedural backdrop on any load error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_path: Option<String>,
+}
+
+impl Default for AppearanceCfg {
+    fn default() -> Self {
+        let t = crate::theme::Theme::futuristic_scifi();
+        AppearanceCfg {
+            corner_radius: t.corner_radius,
+            glow_intensity: t.glow_intensity,
+            blur: t.blur,
+            vignette: t.vignette,
+            hud_accents: t.hud_accents,
+            tab_style: t.tab_style.as_str().to_string(),
+            status_style: t.status_style.as_str().to_string(),
+            wallpaper_enabled: true,
+            wallpaper_path: None,
+        }
+    }
+}
+
+impl AppearanceCfg {
+    pub fn tab_style(&self) -> crate::theme::TabStyle {
+        crate::theme::TabStyle::parse(&self.tab_style)
+    }
+
+    pub fn status_style(&self) -> crate::theme::StatusStyle {
+        crate::theme::StatusStyle::parse(&self.status_style)
     }
 }
 
@@ -188,7 +277,18 @@ pub struct EffectsCfg {
 
 impl Default for EffectsCfg {
     fn default() -> Self {
-        EffectsCfg { enabled: true, rain: None, grid: true, sweep: true, scanlines: true, phosphor: true, glitch: true, max_fps: 30, pause_unfocused: true }
+        let t = crate::theme::Theme::futuristic_scifi();
+        EffectsCfg {
+            enabled: true,
+            rain: None,
+            grid: t.grid_overlay,
+            sweep: true,
+            scanlines: t.scanlines,
+            phosphor: t.glow_intensity > 0.0,
+            glitch: true,
+            max_fps: 30,
+            pause_unfocused: true,
+        }
     }
 }
 
@@ -343,11 +443,37 @@ pub struct A11yCfg {
     /// Speak new output through `spd-say` (speech-dispatcher), if installed.
     pub speak_output: bool,
     pub announce_bell: bool,
+    /// Force every glow effect down to a bare hint, regardless of theme or
+    /// the live glow slider. See `Config::effective_glow`.
+    pub low_glow: bool,
+    /// Force the window fully opaque, regardless of theme or the live
+    /// opacity slider. See `Config::effective_opacity`.
+    pub disable_transparency: bool,
+    /// Force the simulated glass/blur surface off, regardless of theme or
+    /// the live blur slider. See `Config::effective_blur`.
+    pub disable_blur: bool,
+    /// `"light"` or `"dark"` to force that reading of whichever theme is
+    /// active (via `Theme::as_light_variant`/`as_dark_variant`, or by
+    /// picking the matching high-contrast palette when `high_contrast` is
+    /// also set); `None` keeps the preset's natural variant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_scheme: Option<String>,
 }
 
 impl Default for A11yCfg {
     fn default() -> Self {
-        A11yCfg { high_contrast: false, min_contrast: 0.0, reduced_motion: false, screen_reader: false, speak_output: false, announce_bell: true }
+        A11yCfg {
+            high_contrast: false,
+            min_contrast: 0.0,
+            reduced_motion: false,
+            screen_reader: false,
+            speak_output: false,
+            announce_bell: true,
+            low_glow: false,
+            disable_transparency: false,
+            disable_blur: false,
+            color_scheme: None,
+        }
     }
 }
 
@@ -384,6 +510,7 @@ pub struct Config {
     pub cursor: CursorCfg,
     pub scrollback: ScrollCfg,
     pub theme: ThemeCfg,
+    pub appearance: AppearanceCfg,
     pub effects: EffectsCfg,
     pub bell: BellCfg,
     pub selection: SelectionCfg,
@@ -446,6 +573,12 @@ impl Config {
         self.window.padding = self.window.padding.clamp(0.0, 64.0);
         self.window.width = self.window.width.clamp(200.0, 10_000.0);
         self.window.height = self.window.height.clamp(150.0, 10_000.0);
+        self.appearance.corner_radius = self.appearance.corner_radius.clamp(0.0, 32.0);
+        self.appearance.glow_intensity = self.appearance.glow_intensity.clamp(0.0, 1.0);
+        self.appearance.blur = self.appearance.blur.clamp(0.0, 1.0);
+        self.appearance.vignette = self.appearance.vignette.clamp(0.0, 1.0);
+        self.appearance.tab_style = self.appearance.tab_style().as_str().to_string();
+        self.appearance.status_style = self.appearance.status_style().as_str().to_string();
         self.cursor.blink_interval_ms = self.cursor.blink_interval_ms.clamp(100, 5_000);
         self.cursor.thickness = self.cursor.thickness.clamp(1.0, 8.0);
         self.scrollback.lines = self.scrollback.lines.min(1_000_000);
@@ -513,18 +646,37 @@ impl Config {
         }
     }
 
-    /// Resolve the theme: named theme → `home.conf` light/dark follow → accent → per-colour overrides → high contrast.
+    /// Resolve the active theme: preset → `home.conf` light/dark follow →
+    /// high-contrast substitution *or* a forced light/dark variant → every
+    /// generic colour override in `[theme]`. This is a pure function of the
+    /// config (no I/O), so it's cheap enough to call every frame — nothing
+    /// caches it, which is what lets a `ThemeChanged` IPC message or a
+    /// config hot-reload take effect on the very next frame.
     pub fn theme(&self, home: &HomeConf) -> Theme {
-        let mut t = Theme::by_name(&self.theme.name).unwrap_or_else(Theme::dark);
-        if self.theme.follow_system && (self.theme.name == "mitos-dark" || self.theme.name == "mitos-light") {
+        let mut t = Theme::by_name(&self.theme.name).unwrap_or_else(Theme::futuristic_scifi);
+        if self.theme.follow_system && (self.theme.name == "futuristic-scifi" || self.theme.name == "light") {
             match home.theme_mode.as_deref() {
                 Some("light") => t = Theme::light(),
-                Some("dark") => t = Theme::dark(),
+                Some("dark") => t = Theme::futuristic_scifi(),
                 _ => {}
             }
         }
         if self.accessibility.high_contrast {
-            t = if t.light { Theme::high_contrast_light() } else { Theme::high_contrast_dark() };
+            // `color_scheme` still picks which *variant* is used here (hand-tuned
+            // accessible palettes, one per variant) — only whether the palette is
+            // "high contrast" at all comes from `high_contrast` itself.
+            let want_light = match self.accessibility.color_scheme.as_deref() {
+                Some("light") => true,
+                Some("dark") => false,
+                _ => t.light,
+            };
+            t = if want_light { Theme::high_contrast_light() } else { Theme::high_contrast_dark() };
+        } else if let Some(scheme) = self.accessibility.color_scheme.as_deref() {
+            t = match scheme {
+                "light" => t.as_light_variant(),
+                "dark" => t.as_dark_variant(),
+                _ => t,
+            };
         }
         let accent = self.theme.accent.as_deref().and_then(parse_hex).or(home.accent);
         if let Some(a) = accent {
@@ -538,6 +690,15 @@ impl Config {
         }
         if let Some(c) = self.theme.selection.as_deref().and_then(parse_hex) {
             t.selection = c;
+        }
+        if let Some(c) = self.theme.border.as_deref().and_then(parse_hex) {
+            t.border = c;
+        }
+        if let Some(c) = self.theme.surface.as_deref().and_then(parse_hex) {
+            t.surface = c;
+        }
+        if let Some(c) = self.theme.glow_color.as_deref().and_then(parse_hex) {
+            t.glow = c;
         }
         if let Some(c) = self.cursor.color.as_deref().and_then(parse_hex) {
             t.cursor = c;
@@ -553,8 +714,73 @@ impl Config {
         t
     }
 
+    /// Switch the active preset: resolves its base `Theme` and seeds the
+    /// user's live, independently-adjustable settings (window opacity, the
+    /// Appearance sliders, the effects toggles) from its suggested
+    /// defaults — then clears any colour/effect overrides left over from
+    /// whichever theme was active before, so they never leak into the new
+    /// one. Called by the Settings panel's theme picker; `self.theme.name`
+    /// alone is not enough to switch themes correctly on its own.
+    pub fn apply_theme_preset(&mut self, id: &str) {
+        let base = Theme::by_name(id).unwrap_or_else(Theme::futuristic_scifi);
+        self.theme.name = base.id.clone();
+        self.theme.accent = None;
+        self.theme.foreground = None;
+        self.theme.background = None;
+        self.theme.selection = None;
+        self.theme.border = None;
+        self.theme.surface = None;
+        self.theme.glow_color = None;
+        self.theme.palette.clear();
+        self.window.opacity = base.opacity;
+        self.appearance.blur = base.blur;
+        self.appearance.glow_intensity = base.glow_intensity;
+        self.appearance.corner_radius = base.corner_radius;
+        self.appearance.vignette = base.vignette;
+        self.appearance.hud_accents = base.hud_accents;
+        self.appearance.tab_style = base.tab_style.as_str().to_string();
+        self.appearance.status_style = base.status_style.as_str().to_string();
+        self.effects.grid = base.grid_overlay;
+        self.effects.scanlines = base.scanlines;
+        self.effects.phosphor = base.glow_intensity > 0.0;
+        self.effects.sweep = matches!(base.id.as_str(), "futuristic-scifi" | "glass-neon");
+    }
+
+    /// Live window opacity with `[accessibility] disable_transparency`
+    /// applied. Always call this rather than reading `window.opacity`
+    /// directly wherever transparency is actually painted — the point of
+    /// the accessibility flag is that it wins even if a saved slider says
+    /// otherwise, without destroying that saved value.
+    pub fn effective_opacity(&self) -> f32 {
+        if self.accessibility.disable_transparency {
+            1.0
+        } else {
+            self.window.opacity
+        }
+    }
+
+    /// Live simulated-glass strength with `[accessibility] disable_blur` applied.
+    pub fn effective_blur(&self) -> f32 {
+        if self.accessibility.disable_blur {
+            0.0
+        } else {
+            self.appearance.blur
+        }
+    }
+
+    /// Live glow intensity with `[accessibility] low_glow` applied (a hard
+    /// cap rather than a full zero, so focused panes are still visibly
+    /// distinguished — "low-glow", not "no borders at all").
+    pub fn effective_glow(&self) -> f32 {
+        if self.accessibility.low_glow {
+            self.appearance.glow_intensity.min(0.08)
+        } else {
+            self.appearance.glow_intensity
+        }
+    }
+
     pub fn rain_enabled(&self, home: &HomeConf) -> bool {
-        self.effects.enabled && self.effects.rain.or(home.matrix_rain).unwrap_or(true)
+        self.effects.enabled && self.effects.rain.or(home.matrix_rain).unwrap_or(false)
     }
 
     pub fn reduced_motion(&self, home: &HomeConf) -> bool {
@@ -1073,10 +1299,10 @@ mod tests {
         let t = cfg.theme(&home);
         assert!(t.light, "home.conf light mode is followed");
         assert_eq!(t.accent, [0x11, 0x22, 0x33]);
-        let pinned = Config::parse("[theme]\nname = \"solarized-dark\"\n").unwrap();
-        assert_eq!(pinned.theme(&home).name, "solarized-dark");
+        let pinned = Config::parse("[theme]\nname = \"cyberpunk\"\n").unwrap();
+        assert_eq!(pinned.theme(&home).id, "cyberpunk");
         let hc = Config::parse("[accessibility]\nhigh_contrast = true\n").unwrap();
-        assert!(hc.theme(&HomeConf::default()).name.starts_with("high-contrast"));
+        assert!(hc.theme(&HomeConf::default()).id.starts_with("high-contrast"));
         let custom = Config::parse("[theme]\nbackground = \"#010203\"\n").unwrap();
         assert_eq!(custom.theme(&HomeConf::default()).bg, [1, 2, 3]);
     }
@@ -1084,12 +1310,99 @@ mod tests {
     #[test]
     fn rain_setting_precedence() {
         let cfg = Config::default();
-        assert!(cfg.rain_enabled(&HomeConf::default()));
+        assert!(!cfg.rain_enabled(&HomeConf::default()), "rain is opt-in by default");
         assert!(!cfg.rain_enabled(&HomeConf::parse("matrix_rain=false")));
         let forced = Config::parse("[effects]\nrain = true\n").unwrap();
         assert!(forced.rain_enabled(&HomeConf::parse("matrix_rain=false")));
+        let via_home = Config::default();
+        assert!(via_home.rain_enabled(&HomeConf::parse("matrix_rain=true")));
         let off = Config::parse("[effects]\nenabled = false\n").unwrap();
-        assert!(!off.rain_enabled(&HomeConf::default()));
+        assert!(!off.rain_enabled(&HomeConf::parse("matrix_rain=true")));
+    }
+
+    #[test]
+    fn apply_theme_preset_seeds_live_settings_and_clears_old_overrides() {
+        let mut c = Config::default();
+        c.theme.accent = Some("#ff00ff".into());
+        c.window.opacity = 0.3;
+        c.apply_theme_preset("glass-neon");
+        assert_eq!(c.theme.name, "glass-neon");
+        assert_eq!(c.theme.accent, None, "old overrides are cleared on preset switch");
+        let glass = crate::theme::Theme::glass_neon();
+        assert_eq!(c.window.opacity, glass.opacity);
+        assert_eq!(c.appearance.blur, glass.blur);
+        assert_eq!(c.appearance.glow_intensity, glass.glow_intensity);
+        assert_eq!(c.appearance.tab_style, glass.tab_style.as_str());
+        assert_eq!(c.effects.scanlines, glass.scanlines);
+        // resolving the theme now gives Glass Neon's actual palette, unaffected
+        // by the accent override that used to apply to the old preset
+        assert_eq!(c.theme(&HomeConf::default()).id, "glass-neon");
+    }
+
+    #[test]
+    fn effective_helpers_apply_accessibility_overrides_without_losing_the_saved_value() {
+        let mut c = Config::default();
+        c.window.opacity = 0.5;
+        c.appearance.blur = 0.6;
+        c.appearance.glow_intensity = 0.4;
+        assert_eq!(c.effective_opacity(), 0.5);
+        assert_eq!(c.effective_blur(), 0.6);
+        assert_eq!(c.effective_glow(), 0.4);
+        c.accessibility.disable_transparency = true;
+        c.accessibility.disable_blur = true;
+        c.accessibility.low_glow = true;
+        assert_eq!(c.effective_opacity(), 1.0);
+        assert_eq!(c.effective_blur(), 0.0);
+        assert!(c.effective_glow() <= 0.08);
+        // turning the flags back off restores exactly what was saved
+        c.accessibility.disable_transparency = false;
+        c.accessibility.disable_blur = false;
+        c.accessibility.low_glow = false;
+        assert_eq!(c.effective_opacity(), 0.5);
+        assert_eq!(c.effective_blur(), 0.6);
+        assert_eq!(c.effective_glow(), 0.4);
+    }
+
+    #[test]
+    fn color_scheme_accessibility_override_forces_a_variant() {
+        let mut c = Config::default();
+        c.theme.name = "cyberpunk".to_string();
+        assert!(!c.theme(&HomeConf::default()).light, "cyberpunk is naturally dark");
+        c.accessibility.color_scheme = Some("light".to_string());
+        assert!(c.theme(&HomeConf::default()).light);
+        c.accessibility.color_scheme = Some("dark".to_string());
+        assert!(!c.theme(&HomeConf::default()).light);
+        // high_contrast takes precedence over a forced colour_scheme
+        c.accessibility.high_contrast = true;
+        c.accessibility.color_scheme = Some("light".to_string());
+        assert_eq!(c.theme(&HomeConf::default()).id, "high-contrast-light");
+    }
+
+    #[test]
+    fn generic_overrides_cover_surface_border_and_glow_not_just_accent() {
+        let c = Config::parse("[theme]\nborder = \"#123456\"\nsurface = \"#654321\"\nglow_color = \"#00ff00\"\n").unwrap();
+        let t = c.theme(&HomeConf::default());
+        assert_eq!(t.border, [0x12, 0x34, 0x56]);
+        assert_eq!(t.surface, [0x65, 0x43, 0x21]);
+        assert_eq!(t.glow, [0x00, 0xff, 0x00]);
+    }
+
+    #[test]
+    fn appearance_values_are_clamped_and_tab_status_style_normalise() {
+        let mut c = Config::default();
+        c.appearance.corner_radius = 999.0;
+        c.appearance.glow_intensity = 5.0;
+        c.appearance.blur = -1.0;
+        c.appearance.vignette = 3.0;
+        c.appearance.tab_style = "not-a-real-style".to_string();
+        c.appearance.status_style = "also-bogus".to_string();
+        c.sanitize();
+        assert_eq!(c.appearance.corner_radius, 32.0);
+        assert_eq!(c.appearance.glow_intensity, 1.0);
+        assert_eq!(c.appearance.blur, 0.0);
+        assert_eq!(c.appearance.vignette, 1.0);
+        assert_eq!(c.appearance.tab_style, "rounded");
+        assert_eq!(c.appearance.status_style, "minimal");
     }
 
     #[test]
