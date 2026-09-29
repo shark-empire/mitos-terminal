@@ -1,11 +1,4 @@
 # MITOS Terminal — shell integration for zsh (OSC 7 + OSC 133).
-
-# 1. Define custom prompt
-PROMPT='[ %n@%m ]-[ %~ ]-$ '
-
-# 2. Source MITOS shell integration (appends OSC 133;B to PS1)
-[[ -n "$MITOS_SHELL_INTEGRATION_DIR" ]] && source "$MITOS_SHELL_INTEGRATION_DIR/mitos.zsh"
-
 # Add to ~/.zshrc:
 #   [[ -n "$MITOS_SHELL_INTEGRATION_DIR" ]] && source "$MITOS_SHELL_INTEGRATION_DIR/mitos.zsh"
 
