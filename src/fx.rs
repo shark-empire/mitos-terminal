@@ -118,7 +118,12 @@ impl CodeRain {
     }
 
     /// Paint the rain behind the terminal content.
-    pub fn paint(&self, p: &Painter, rect: Rect, now: f64, tint: [u8; 3]) {
+    /// `tint` colours the trail; `head` is the "white-hot" leading glyph —
+    /// kept as a separate parameter (rather than hardcoded) because a fixed
+    /// near-white head is only actually "hot" against a dark background. On
+    /// a light theme the caller passes a dark, saturated tone instead, so
+    /// the head glyph stays the brightest thing in the column either way.
+    pub fn paint(&self, p: &Painter, rect: Rect, now: f64, tint: [u8; 3], head: [u8; 3]) {
         let font = FontId::monospace(self.glyph_size);
         let tick = (now * 10.0) as u64; // glyph mutation clock (~10 Hz flicker)
 
@@ -135,11 +140,9 @@ impl CodeRain {
                 let alpha = (fade * fade * 130.0_f32 * self.opacity) as u8;
 
                 let (ch, color) = if i == 0 {
-                    // White-hot head glyph, like the reference image
-                    (
-                        glyph(hash3(d.seed, tick, 0)),
-                        Color32::from_rgba_unmultiplied(210, 255, 210, (190.0_f32 * self.opacity) as u8),
-                    )
+                    // The leading glyph: brightest against whatever
+                    // background this theme actually has (see `head`'s doc).
+                    (glyph(hash3(d.seed, tick, 0)), Color32::from_rgba_unmultiplied(head[0], head[1], head[2], (190.0_f32 * self.opacity) as u8))
                 } else {
                     (
                         glyph(hash3(d.seed, tick, i as u64)),
