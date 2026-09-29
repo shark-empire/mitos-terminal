@@ -244,7 +244,8 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
 
     if let Some(rain) = rain {
         rain.tick(dt.max(0.0).min(0.25), rect);
-        rain.paint(&painter, rect, opts.now, theme.accent);
+        let head = if theme.light { mix(theme.accent, [0, 0, 0], 0.55) } else { [210, 255, 210] };
+        rain.paint(&painter, rect, opts.now, theme.accent, head);
         animating = true;
     }
 
