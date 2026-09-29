@@ -4,6 +4,13 @@
 # so the terminal can offer: new tabs in the same directory, jump-to-previous-prompt, command
 # history with exit codes/durations, and "command finished" notifications.
 #
+
+# 1. Define custom prompt
+export PS1='[ \u@\h ]-[ \w ]-$ '
+
+# 2. Source MITOS shell integration (appends OSC 133;B to PS1)
+[ -n "$MITOS_SHELL_INTEGRATION_DIR" ] && . "$MITOS_SHELL_INTEGRATION_DIR/mitos.bash"
+
 # mitos-terminal loads this automatically for bash. To enable it in other setups add to ~/.bashrc:
 #   [ -n "$MITOS_SHELL_INTEGRATION_DIR" ] && . "$MITOS_SHELL_INTEGRATION_DIR/mitos.bash"
 
