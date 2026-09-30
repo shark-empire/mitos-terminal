@@ -1,3 +1,19 @@
+# MITOS Terminal — CI
+#
+# Every check runs as its own job so failures are independent and legible
+# (a clippy nit never hides a test failure). `ci` at the bottom depends on
+# all of them and is the one check to require in branch protection.
+#
+# Private git dependencies: `mitos-utils` and `mitos-pkg` (see Cargo.toml)
+# are fetched by Cargo itself over the URLs already in Cargo.toml — no
+# separate clone step is needed. If either repo is private, the runner
+# needs credentials for it (a deploy key or a PAT with access), e.g.:
+#
+#   - name: Configure git for a private dependency
+#     run: git config --global url."https://x-access-token:${{ secrets.MITOS_DEPS_TOKEN }}@github.com/".insteadOf "https://github.com/"
+#
+# add that as a step before "Setup Rust toolchain" in any job below if so.
+
 name: MITOS Terminal CI
 
 on:
@@ -205,8 +221,6 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: cargo-audit-tool
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: cargo audit
@@ -248,9 +262,12 @@ jobs:
     needs: [fmt, clippy, build, test, docs]
     if: always()
     steps:
-      - name: All required jobs passed
+      - name: Fail if any required job failed
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
-          echo "One or more required jobs failed:"
+          echo "One or more required jobs did not succeed:"
           echo '${{ toJSON(needs) }}'
           exit 1
+      - name: All required jobs passed
+        if: ${{ !(contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+        run: echo "fmt, clippy, build, test, and docs all passed."
