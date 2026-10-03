@@ -22,10 +22,18 @@ pub struct Mods {
 }
 
 impl Mods {
-    pub const NONE: Mods = Mods { shift: false, alt: false, ctrl: false };
+    pub const NONE: Mods = Mods {
+        shift: false,
+        alt: false,
+        ctrl: false,
+    };
 
     pub fn from_egui(m: &egui::Modifiers) -> Mods {
-        Mods { shift: m.shift, alt: m.alt, ctrl: m.ctrl }
+        Mods {
+            shift: m.shift,
+            alt: m.alt,
+            ctrl: m.ctrl,
+        }
     }
 
     pub fn any(&self) -> bool {
@@ -129,7 +137,11 @@ pub fn encode_key(key: Key, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
         _ => None,
     };
     if let Some(n) = tilde {
-        let s: String = if has_mod { format!("\x1b[{};{}~", n, m) } else { format!("\x1b[{}~", n) };
+        let s: String = if has_mod {
+            format!("\x1b[{n};{m}~")
+        } else {
+            format!("\x1b[{n}~")
+        };
         return Some(s.into_bytes());
     }
 
@@ -142,14 +154,22 @@ pub fn encode_key(key: Key, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
         _ => None,
     };
     if let Some(f) = ss3 {
-        let s: String = if has_mod { format!("\x1b[1;{}{}", m, f as char) } else { format!("\x1bO{}", f as char) };
+        let s: String = if has_mod {
+            format!("\x1b[1;{}{}", m, f as char)
+        } else {
+            format!("\x1bO{}", f as char)
+        };
         return Some(s.into_bytes());
     }
 
     match key {
         Key::Enter => return Some(with_alt(mods, vec![b'\r'])),
         Key::Tab => {
-            return Some(if mods.shift { b"\x1b[Z".to_vec() } else { with_alt(mods, vec![b'\t']) });
+            return Some(if mods.shift {
+                b"\x1b[Z".to_vec()
+            } else {
+                with_alt(mods, vec![b'\t'])
+            });
         }
         Key::Backspace => {
             let b = if mods.ctrl { 0x08 } else { 0x7f };
@@ -273,8 +293,12 @@ pub fn encode_mouse(mode: MouseMode, enc: MouseEnc, ev: &MouseEvent) -> Option<V
 
     match enc {
         MouseEnc::Sgr => {
-            let fin = if ev.kind == MouseKind::Release { 'm' } else { 'M' };
-            Some(format!("\x1b[<{};{};{}{}", cb, x, y, fin).into_bytes())
+            let fin = if ev.kind == MouseKind::Release {
+                'm'
+            } else {
+                'M'
+            };
+            Some(format!("\x1b[<{cb};{x};{y}{fin}").into_bytes())
         }
         MouseEnc::Urxvt => Some(format!("\x1b[{};{};{}M", cb + 32, x, y).into_bytes()),
         MouseEnc::Utf8 => {
@@ -290,7 +314,14 @@ pub fn encode_mouse(mode: MouseMode, enc: MouseEnc, ev: &MouseEvent) -> Option<V
             if x + 32 > 255 || y + 32 > 255 {
                 return None;
             }
-            Some(vec![0x1b, b'[', b'M', (cb + 32) as u8, (x + 32) as u8, (y + 32) as u8])
+            Some(vec![
+                0x1b,
+                b'[',
+                b'M',
+                (cb + 32) as u8,
+                (x + 32) as u8,
+                (y + 32) as u8,
+            ])
         }
     }
 }
@@ -298,7 +329,11 @@ pub fn encode_mouse(mode: MouseMode, enc: MouseEnc, ev: &MouseEvent) -> Option<V
 /// Alternate-scroll (DECSET 1007): the wheel on the alternate screen becomes arrow keys.
 pub fn wheel_as_arrows(up: bool, lines: usize, app_cursor: bool) -> Vec<u8> {
     let f = if up { b'A' } else { b'B' };
-    let one: Vec<u8> = if app_cursor { vec![0x1b, b'O', f] } else { vec![0x1b, b'[', f] };
+    let one: Vec<u8> = if app_cursor {
+        vec![0x1b, b'O', f]
+    } else {
+        vec![0x1b, b'[', f]
+    };
     let n = lines.clamp(1, 64);
     let mut out = Vec::with_capacity(one.len() * n);
     for _ in 0..n {
@@ -321,9 +356,21 @@ mod tests {
     use super::*;
 
     const N: Mods = Mods::NONE;
-    const CTRL: Mods = Mods { shift: false, alt: false, ctrl: true };
-    const ALT: Mods = Mods { shift: false, alt: true, ctrl: false };
-    const SHIFT: Mods = Mods { shift: true, alt: false, ctrl: false };
+    const CTRL: Mods = Mods {
+        shift: false,
+        alt: false,
+        ctrl: true,
+    };
+    const ALT: Mods = Mods {
+        shift: false,
+        alt: true,
+        ctrl: false,
+    };
+    const SHIFT: Mods = Mods {
+        shift: true,
+        alt: false,
+        ctrl: false,
+    };
 
     fn k(key: Key, mods: Mods, app: bool) -> Option<Vec<u8>> {
         encode_key(key, mods, app)
@@ -335,7 +382,15 @@ mod tests {
         assert_eq!(SHIFT.param(), 2);
         assert_eq!(ALT.param(), 3);
         assert_eq!(CTRL.param(), 5);
-        assert_eq!(Mods { shift: true, alt: true, ctrl: true }.param(), 8);
+        assert_eq!(
+            Mods {
+                shift: true,
+                alt: true,
+                ctrl: true
+            }
+            .param(),
+            8
+        );
     }
 
     #[test]
@@ -343,7 +398,18 @@ mod tests {
         assert_eq!(k(Key::ArrowUp, N, false), Some(b"\x1b[A".to_vec()));
         assert_eq!(k(Key::ArrowUp, N, true), Some(b"\x1bOA".to_vec()));
         assert_eq!(k(Key::ArrowLeft, CTRL, true), Some(b"\x1b[1;5D".to_vec()));
-        assert_eq!(k(Key::ArrowDown, Mods { shift: true, alt: true, ctrl: false }, false), Some(b"\x1b[1;4B".to_vec()));
+        assert_eq!(
+            k(
+                Key::ArrowDown,
+                Mods {
+                    shift: true,
+                    alt: true,
+                    ctrl: false
+                },
+                false
+            ),
+            Some(b"\x1b[1;4B".to_vec())
+        );
         assert_eq!(k(Key::Home, N, false), Some(b"\x1b[H".to_vec()));
         assert_eq!(k(Key::End, N, true), Some(b"\x1bOF".to_vec()));
     }
@@ -381,8 +447,30 @@ mod tests {
         assert_eq!(k(Key::C, CTRL, false), Some(vec![3]));
         assert_eq!(k(Key::D, CTRL, false), Some(vec![4]));
         assert_eq!(k(Key::Z, CTRL, false), Some(vec![26]));
-        assert_eq!(k(Key::A, Mods { shift: true, alt: false, ctrl: true }, false), Some(vec![1]));
-        assert_eq!(k(Key::C, Mods { shift: false, alt: true, ctrl: true }, false), Some(vec![0x1b, 3]));
+        assert_eq!(
+            k(
+                Key::A,
+                Mods {
+                    shift: true,
+                    alt: false,
+                    ctrl: true
+                },
+                false
+            ),
+            Some(vec![1])
+        );
+        assert_eq!(
+            k(
+                Key::C,
+                Mods {
+                    shift: false,
+                    alt: true,
+                    ctrl: true
+                },
+                false
+            ),
+            Some(vec![0x1b, 3])
+        );
         assert_eq!(k(Key::OpenBracket, CTRL, false), Some(vec![0x1b]));
         assert_eq!(k(Key::Backslash, CTRL, false), Some(vec![0x1c]));
         assert_eq!(k(Key::Num8, CTRL, false), Some(vec![0x7f]));
@@ -399,17 +487,39 @@ mod tests {
     }
 
     fn ev(kind: MouseKind, button: u8, col: usize, row: usize) -> MouseEvent {
-        MouseEvent { kind, button, col, row, mods: N, held: None }
+        MouseEvent {
+            kind,
+            button,
+            col,
+            row,
+            mods: N,
+            held: None,
+        }
     }
 
     #[test]
     fn sgr_mouse_encoding() {
         let m = |e: MouseEvent| encode_mouse(MouseMode::Normal, MouseEnc::Sgr, &e);
-        assert_eq!(m(ev(MouseKind::Press, 0, 0, 0)), Some(b"\x1b[<0;1;1M".to_vec()));
-        assert_eq!(m(ev(MouseKind::Release, 0, 0, 0)), Some(b"\x1b[<0;1;1m".to_vec()));
-        assert_eq!(m(ev(MouseKind::Press, 2, 9, 4)), Some(b"\x1b[<2;10;5M".to_vec()));
-        assert_eq!(m(ev(MouseKind::WheelUp, 0, 4, 6)), Some(b"\x1b[<64;5;7M".to_vec()));
-        assert_eq!(m(ev(MouseKind::WheelDown, 0, 0, 0)), Some(b"\x1b[<65;1;1M".to_vec()));
+        assert_eq!(
+            m(ev(MouseKind::Press, 0, 0, 0)),
+            Some(b"\x1b[<0;1;1M".to_vec())
+        );
+        assert_eq!(
+            m(ev(MouseKind::Release, 0, 0, 0)),
+            Some(b"\x1b[<0;1;1m".to_vec())
+        );
+        assert_eq!(
+            m(ev(MouseKind::Press, 2, 9, 4)),
+            Some(b"\x1b[<2;10;5M".to_vec())
+        );
+        assert_eq!(
+            m(ev(MouseKind::WheelUp, 0, 4, 6)),
+            Some(b"\x1b[<64;5;7M".to_vec())
+        );
+        assert_eq!(
+            m(ev(MouseKind::WheelDown, 0, 0, 0)),
+            Some(b"\x1b[<65;1;1M".to_vec())
+        );
         let mut e = ev(MouseKind::Press, 0, 0, 0);
         e.mods = CTRL;
         assert_eq!(m(e), Some(b"\x1b[<16;1;1M".to_vec()));
@@ -418,14 +528,39 @@ mod tests {
     #[test]
     fn legacy_mouse_encodings() {
         let e = ev(MouseKind::Press, 0, 2, 3);
-        assert_eq!(encode_mouse(MouseMode::Normal, MouseEnc::Default, &e), Some(vec![0x1b, b'[', b'M', 32, 35, 36]));
+        assert_eq!(
+            encode_mouse(MouseMode::Normal, MouseEnc::Default, &e),
+            Some(vec![0x1b, b'[', b'M', 32, 35, 36])
+        );
         let r = ev(MouseKind::Release, 0, 2, 3);
-        assert_eq!(encode_mouse(MouseMode::Normal, MouseEnc::Default, &r), Some(vec![0x1b, b'[', b'M', 35, 35, 36]));
-        assert_eq!(encode_mouse(MouseMode::Normal, MouseEnc::Urxvt, &ev(MouseKind::Press, 0, 0, 0)), Some(b"\x1b[32;1;1M".to_vec()));
+        assert_eq!(
+            encode_mouse(MouseMode::Normal, MouseEnc::Default, &r),
+            Some(vec![0x1b, b'[', b'M', 35, 35, 36])
+        );
+        assert_eq!(
+            encode_mouse(
+                MouseMode::Normal,
+                MouseEnc::Urxvt,
+                &ev(MouseKind::Press, 0, 0, 0)
+            ),
+            Some(b"\x1b[32;1;1M".to_vec())
+        );
         // coordinates beyond 223 cannot be sent in the legacy encoding
-        assert_eq!(encode_mouse(MouseMode::Normal, MouseEnc::Default, &ev(MouseKind::Press, 0, 300, 0)), None);
+        assert_eq!(
+            encode_mouse(
+                MouseMode::Normal,
+                MouseEnc::Default,
+                &ev(MouseKind::Press, 0, 300, 0)
+            ),
+            None
+        );
         // …but UTF-8 mode can
-        assert!(encode_mouse(MouseMode::Normal, MouseEnc::Utf8, &ev(MouseKind::Press, 0, 300, 0)).is_some());
+        assert!(encode_mouse(
+            MouseMode::Normal,
+            MouseEnc::Utf8,
+            &ev(MouseKind::Press, 0, 300, 0)
+        )
+        .is_some());
     }
 
     #[test]
@@ -435,16 +570,44 @@ mod tests {
         assert_eq!(encode_mouse(MouseMode::Button, MouseEnc::Sgr, &mv), None);
         let mut drag = mv;
         drag.held = Some(0);
-        assert_eq!(encode_mouse(MouseMode::Button, MouseEnc::Sgr, &drag), Some(b"\x1b[<32;2;2M".to_vec()));
-        assert_eq!(encode_mouse(MouseMode::Any, MouseEnc::Sgr, &mv), Some(b"\x1b[<35;2;2M".to_vec()));
-        assert_eq!(encode_mouse(MouseMode::Off, MouseEnc::Sgr, &ev(MouseKind::Press, 0, 0, 0)), None);
-        assert!(encode_mouse(MouseMode::X10, MouseEnc::Default, &ev(MouseKind::Press, 0, 0, 0)).is_some());
-        assert_eq!(encode_mouse(MouseMode::X10, MouseEnc::Default, &ev(MouseKind::Release, 0, 0, 0)), None);
+        assert_eq!(
+            encode_mouse(MouseMode::Button, MouseEnc::Sgr, &drag),
+            Some(b"\x1b[<32;2;2M".to_vec())
+        );
+        assert_eq!(
+            encode_mouse(MouseMode::Any, MouseEnc::Sgr, &mv),
+            Some(b"\x1b[<35;2;2M".to_vec())
+        );
+        assert_eq!(
+            encode_mouse(
+                MouseMode::Off,
+                MouseEnc::Sgr,
+                &ev(MouseKind::Press, 0, 0, 0)
+            ),
+            None
+        );
+        assert!(encode_mouse(
+            MouseMode::X10,
+            MouseEnc::Default,
+            &ev(MouseKind::Press, 0, 0, 0)
+        )
+        .is_some());
+        assert_eq!(
+            encode_mouse(
+                MouseMode::X10,
+                MouseEnc::Default,
+                &ev(MouseKind::Release, 0, 0, 0)
+            ),
+            None
+        );
     }
 
     #[test]
     fn wheel_and_focus_helpers() {
-        assert_eq!(wheel_as_arrows(true, 3, false), b"\x1b[A\x1b[A\x1b[A".to_vec());
+        assert_eq!(
+            wheel_as_arrows(true, 3, false),
+            b"\x1b[A\x1b[A\x1b[A".to_vec()
+        );
         assert_eq!(wheel_as_arrows(false, 1, true), b"\x1bOB".to_vec());
         assert_eq!(focus_report(true), b"\x1b[I");
         assert_eq!(focus_report(false), b"\x1b[O");

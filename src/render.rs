@@ -22,7 +22,7 @@
 use egui::{Align2, Color32, FontId, Pos2, Rect as ERect, Sense, Stroke, Vec2};
 
 use crate::fx;
-use crate::term::{attr, mark, Cell, Color, CursorShape, Overrides, Row, Term};
+use crate::term::{attr, mark, Color, CursorShape, Overrides, Row, Term};
 use crate::theme::{mix, Rgb, Theme};
 
 // ---------------------------------------------------------------------------
@@ -41,8 +41,14 @@ pub struct Metrics {
 /// always matches what was actually rasterised — no separate glyph-metrics
 /// API to drift out of sync with it.
 pub fn measure(ctx: &egui::Context, font: &FontId) -> Metrics {
-    let size = ctx.fonts(|f| f.layout_no_wrap("M".to_string(), font.clone(), Color32::WHITE).size());
-    Metrics { char_w: size.x.max(1.0), row_h: size.y.max(1.0) }
+    let size = ctx.fonts(|f| {
+        f.layout_no_wrap("M".to_string(), font.clone(), Color32::WHITE)
+            .size()
+    });
+    Metrics {
+        char_w: size.x.max(1.0),
+        row_h: size.y.max(1.0),
+    }
 }
 
 /// Resolves to the built-in monospace font. `family` (from `terminal.toml`'s
@@ -78,15 +84,6 @@ impl Run {
     }
 }
 
-/// Attributes shared by consecutive cells worth batching into one draw call.
-/// Link id is deliberately excluded: adjacent same-styled cells with
-/// different link ids still render identically, and splitting the run would
-/// only cost draw calls for no visual gain — hover/click hit-testing reads
-/// the link straight from the `Term`, not from `Run`.
-fn same_style(a: &Cell, b: &Cell, ta: Rgb, tb: Rgb, ba: Rgb, bb: Rgb, ua: Rgb, ub: Rgb) -> bool {
-    ta == tb && ba == bb && ua == ub && (a.flags & !attr::WIDE_TAIL) == (b.flags & !attr::WIDE_TAIL)
-}
-
 /// Coalesce one row into attribute runs, resolving palette colours and
 /// swapping fg/bg for `INVERSE` and the whole-screen `DECSCNM` mode. Wide-tail
 /// spacer cells are skipped (their glyph already came from the head cell).
@@ -101,17 +98,27 @@ pub fn coalesce_row(theme: &Theme, ov: &Overrides, row: &Row, screen_reverse: bo
         }
         let mut fg = theme.resolve(ov, cell.fg, true);
         let mut bg = theme.resolve(ov, cell.bg, false);
-        let ul = if cell.ul == Color::Default { fg } else { theme.resolve(ov, cell.ul, true) };
+        let ul = if cell.ul == Color::Default {
+            fg
+        } else {
+            theme.resolve(ov, cell.ul, true)
+        };
         if (cell.flags & attr::INVERSE != 0) != screen_reverse {
             std::mem::swap(&mut fg, &mut bg);
         }
         if cell.flags & attr::DIM != 0 {
             fg = mix(fg, bg, 0.4);
         }
-        let ch = if cell.ch == ' ' && bg == theme.bg { ' ' } else { cell.ch };
+        let ch = if cell.ch == ' ' && bg == theme.bg {
+            ' '
+        } else {
+            cell.ch
+        };
         let width = if cell.flags & attr::WIDE != 0 { 2 } else { 1 };
 
-        let extend = runs.last_mut().filter(|r| r.col1 == x && same_style_run(r, fg, bg, ul, cell.flags));
+        let extend = runs
+            .last_mut()
+            .filter(|r| r.col1 == x && same_style_run(r, fg, bg, ul, cell.flags));
         match extend {
             Some(r) => {
                 push_char(&mut r.text, ch);
@@ -120,15 +127,32 @@ pub fn coalesce_row(theme: &Theme, ov: &Overrides, row: &Row, screen_reverse: bo
             None => {
                 let mut text = String::new();
                 push_char(&mut text, ch);
-                runs.push(Run { col0: x, col1: x + width, text, fg, bg, ul, flags: cell.flags, link: cell.link });
+                runs.push(Run {
+                    col0: x,
+                    col1: x + width,
+                    text,
+                    fg,
+                    bg,
+                    ul,
+                    flags: cell.flags,
+                    link: cell.link,
+                });
             }
         }
     }
     runs
 }
 
+/// Attributes shared by consecutive cells worth batching into one draw call.
+/// Link id is deliberately excluded: adjacent same-styled cells with
+/// different link ids still render identically, and splitting the run would
+/// only cost draw calls for no visual gain — hover/click hit-testing reads
+/// the link straight from the `Term`, not from `Run`.
 fn same_style_run(r: &Run, fg: Rgb, bg: Rgb, ul: Rgb, flags: u16) -> bool {
-    r.fg == fg && r.bg == bg && r.ul == ul && (r.flags & !attr::WIDE_TAIL) == (flags & !attr::WIDE_TAIL)
+    r.fg == fg
+        && r.bg == bg
+        && r.ul == ul
+        && (r.flags & !attr::WIDE_TAIL) == (flags & !attr::WIDE_TAIL)
 }
 
 fn push_char(s: &mut String, c: char) {
@@ -194,7 +218,14 @@ pub struct PaintOpts<'a> {
 /// selection and effects into `rect`. Returns whether any per-frame
 /// animation is still in flight (so the caller knows to keep requesting
 /// repaints) — the static ambient backdrop deliberately does *not* count.
-pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintOpts, rain: Option<&mut fx::CodeRain>, dt: f32) -> bool {
+pub fn paint_pane(
+    ui: &mut egui::Ui,
+    rect: ERect,
+    term: &mut Term,
+    opts: &PaintOpts,
+    rain: Option<&mut fx::CodeRain>,
+    dt: f32,
+) -> bool {
     let painter = ui.painter().with_clip_rect(rect);
     let theme = opts.theme;
     let m = opts.metrics;
@@ -204,15 +235,38 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
     let base_solid = (255.0 * opts.window_opacity.clamp(0.0, 1.0)) as u8;
     if opts.blur > 0.01 {
         if opts.wallpaper_enabled {
-            fx::paint_ambient_backdrop(&painter, rect, opts.pane_seed, theme.bg, theme.accent, theme.glow);
+            fx::paint_ambient_backdrop(
+                &painter,
+                rect,
+                opts.pane_seed,
+                theme.bg,
+                theme.accent,
+                theme.glow,
+            );
         }
         let surface_alpha = ((base_solid as f32) * (1.0 - opts.blur * 0.55)).max(40.0) as u8;
-        fx::paint_glass_surface(&painter, rect, opts.corner_radius, theme.surface, surface_alpha);
+        fx::paint_glass_surface(
+            &painter,
+            rect,
+            opts.corner_radius,
+            theme.surface,
+            surface_alpha,
+        );
     } else {
-        painter.rect_filled(rect, opts.corner_radius, Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], base_solid));
+        painter.rect_filled(
+            rect,
+            opts.corner_radius,
+            Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], base_solid),
+        );
     }
     let glow_mul = if opts.focused { 1.0 } else { 0.45 };
-    fx::paint_glow_border(&painter, rect, opts.corner_radius, theme.glow, opts.glow_intensity * glow_mul);
+    fx::paint_glow_border(
+        &painter,
+        rect,
+        opts.corner_radius,
+        theme.glow,
+        opts.glow_intensity * glow_mul,
+    );
     fx::paint_vignette(&painter, rect, opts.vignette);
     if opts.hud_accents && opts.focused {
         fx::paint_hud_accents(&painter, rect, theme.accent, 130);
@@ -223,17 +277,31 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
     // negotiable, so the reading area never inherits the full transparency.
     // Padding is capped relative to the pane's own size so a large
     // `[window] padding` on a small pane can never invert the rect.
-    let pad = opts.padding.max(0.0).min(rect.width() * 0.4).min(rect.height() * 0.4);
+    let pad = opts
+        .padding
+        .max(0.0)
+        .min(rect.width() * 0.4)
+        .min(rect.height() * 0.4);
     let text_area = rect.shrink(pad);
     let legibility_alpha = (base_solid as f32).max(232.0) as u8;
-    painter.rect_filled(text_area, (opts.corner_radius - pad).max(0.0), Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], legibility_alpha));
+    painter.rect_filled(
+        text_area,
+        (opts.corner_radius - pad).max(0.0),
+        Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], legibility_alpha),
+    );
 
     // Terminal-drawn status/breadcrumb strip (`theme::StatusStyle`),
     // independent of the shell's own prompt: drawn inside the top padding
     // margin so it never takes space away from the character grid, and
     // skipped automatically when that margin is too thin to read cleanly.
     if opts.status_style != crate::theme::StatusStyle::Hidden && pad >= 12.0 {
-        paint_status_strip(&painter, ERect::from_min_max(rect.left_top(), Pos2::new(rect.right(), text_area.top())), theme, opts, term.cwd());
+        paint_status_strip(
+            &painter,
+            ERect::from_min_max(rect.left_top(), Pos2::new(rect.right(), text_area.top())),
+            theme,
+            opts,
+            term.cwd(),
+        );
     }
 
     // Everything below this point already addresses its drawing relative to
@@ -243,18 +311,20 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
     let rect = text_area;
 
     if let Some(rain) = rain {
-        rain.tick(dt.max(0.0).min(0.25), rect);
-        let head = if theme.light { mix(theme.accent, [0, 0, 0], 0.55) } else { [210, 255, 210] };
+        rain.tick(dt.clamp(0.0, 0.25), rect);
+        let head = if theme.light {
+            mix(theme.accent, [0, 0, 0], 0.55)
+        } else {
+            [210, 255, 210]
+        };
         rain.paint(&painter, rect, opts.now, theme.accent, head);
         animating = true;
     }
 
-    if opts.effects.enabled {
-        if opts.effects.grid {
-            fx::paint_grid(&painter, rect, opts.now, theme.accent);
-            if !opts.reduced_motion {
-                animating = true;
-            }
+    if opts.effects.enabled && opts.effects.grid {
+        fx::paint_grid(&painter, rect, opts.now, theme.accent);
+        if !opts.reduced_motion {
+            animating = true;
         }
     }
 
@@ -269,15 +339,22 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
     let a11y_text = term.visible_text();
     ui.put(
         rect,
-        egui::Label::new(egui::RichText::new(a11y_text).font(opts.font.clone()).color(Color32::TRANSPARENT))
-            .selectable(false)
-            .wrap(),
+        egui::Label::new(
+            egui::RichText::new(a11y_text)
+                .font(opts.font.clone())
+                .color(Color32::TRANSPARENT),
+        )
+        .selectable(false)
+        .wrap(),
     );
 
     let (cx, cy) = term.cursor_pos();
     let cursor_row_visible = term.display_offset == 0;
     let selection = term.selection;
-    let hits: Vec<_> = opts.show_search.map(|q| term.search(q, false)).unwrap_or_default();
+    let hits: Vec<_> = opts
+        .show_search
+        .map(|q| term.search(q, false))
+        .unwrap_or_default();
 
     for r in 0..rows {
         let y = rect.top() + r as f32 * m.row_h;
@@ -292,9 +369,16 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
             // The lookup borrows `term` immutably; `describe` copies out only the
             // plain-data fields we need so that borrow ends before `paint_widget_view`
             // needs `term` mutably (for queuing a click's command).
-            let found = term.widgets().iter().find(|w| w.line == abs).map(|w| (w.id, describe(&w.widget)));
+            let found = term
+                .widgets()
+                .iter()
+                .find(|w| w.line == abs)
+                .map(|w| (w.id, describe(&w.widget)));
             if let Some((wid, view)) = found {
-                let wrect = ERect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), m.row_h.max(22.0)));
+                let wrect = ERect::from_min_size(
+                    Pos2::new(rect.left(), y),
+                    Vec2::new(rect.width(), m.row_h.max(22.0)),
+                );
                 paint_widget_view(ui, wrect, wid, &view, term);
                 continue;
             }
@@ -308,14 +392,21 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
             if run.bg != theme.bg {
                 painter.rect_filled(cell_rect, 0.0, c32(run.bg));
             }
-            if !run.text.trim().is_empty() || run.flags & attr::ANY_UL != 0 || run.flags & attr::STRIKE != 0 {
+            if !run.text.trim().is_empty()
+                || run.flags & attr::ANY_UL != 0
+                || run.flags & attr::STRIKE != 0
+            {
                 let mut fg = c32(run.fg);
                 if run.link != 0 {
                     fg = c32(mix(run.fg, theme.accent, 0.35));
                 }
                 if !run.text.chars().all(|c| c == ' ') {
                     let mut job = egui::text::LayoutJob::default();
-                    let mut fmt = egui::TextFormat { font_id: opts.font.clone(), color: fg, ..Default::default() };
+                    let mut fmt = egui::TextFormat {
+                        font_id: opts.font.clone(),
+                        color: fg,
+                        ..Default::default()
+                    };
                     if run.flags & attr::BOLD != 0 {
                         fmt.color = c32(brighten(run.fg));
                     }
@@ -323,7 +414,7 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
                         fmt.italics = true;
                     }
                     if run.flags & attr::STRIKE != 0 {
-                        fmt.strikethrough = Stroke::new(1.0, fmt.color);
+                        fmt.strikethrough = Stroke::new(1.0_f32, fmt.color);
                     }
                     job.append(&run.text, 0.0, fmt);
                     painter.galley(Pos2::new(x0, y), ui.fonts(|f| f.layout_job(job)), fg);
@@ -334,7 +425,13 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
                 if let Some((hx, hy)) = opts.hover_cell {
                     if hy == r && hx >= run.col0 && hx < run.col1 {
                         let ly = cell_rect.bottom() - 1.0;
-                        painter.line_segment([Pos2::new(cell_rect.left(), ly), Pos2::new(cell_rect.right(), ly)], Stroke::new(1.0, c32(run.fg)));
+                        painter.line_segment(
+                            [
+                                Pos2::new(cell_rect.left(), ly),
+                                Pos2::new(cell_rect.right(), ly),
+                            ],
+                            Stroke::new(1.0_f32, c32(run.fg)),
+                        );
                     }
                 }
             }
@@ -344,7 +441,16 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
             if let Some((c0, c1)) = sel.cols_on_line(abs, cols) {
                 let x0 = rect.left() + c0 as f32 * m.char_w;
                 let x1 = rect.left() + (c1 + 1) as f32 * m.char_w;
-                painter.rect_filled(ERect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, y + m.row_h)), 0.0, Color32::from_rgba_unmultiplied(theme.selection[0], theme.selection[1], theme.selection[2], 110));
+                painter.rect_filled(
+                    ERect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, y + m.row_h)),
+                    0.0,
+                    Color32::from_rgba_unmultiplied(
+                        theme.selection[0],
+                        theme.selection[1],
+                        theme.selection[2],
+                        110,
+                    ),
+                );
             }
         }
         for hit in &hits {
@@ -352,12 +458,22 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
                 if *line == abs {
                     let x0 = rect.left() + *c0 as f32 * m.char_w;
                     let x1 = rect.left() + (*c1 + 1) as f32 * m.char_w;
-                    painter.rect_stroke(ERect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, y + m.row_h)), 1.0, Stroke::new(1.5, c32(opts.accent)));
+                    painter.rect_stroke(
+                        ERect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, y + m.row_h)),
+                        1.0,
+                        Stroke::new(1.5_f32, c32(opts.accent)),
+                    );
                 }
             }
         }
         if row.marks & mark::PROMPT != 0 || row.marks & mark::BLOCK != 0 {
-            painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.left(), y + m.row_h)], Stroke::new(2.0, c32(theme.prompt)));
+            painter.line_segment(
+                [
+                    Pos2::new(rect.left(), y),
+                    Pos2::new(rect.left(), y + m.row_h),
+                ],
+                Stroke::new(2.0_f32, c32(theme.prompt)),
+            );
         }
     }
 
@@ -365,21 +481,44 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
         if cursor_row_visible && cy < rows {
             let x = rect.left() + cx as f32 * m.char_w;
             let y = rect.top() + cy as f32 * m.row_h;
-            painter.text(Pos2::new(x, y), Align2::LEFT_TOP, ghost, opts.font.clone(), Color32::from_rgba_unmultiplied(theme.fg[0], theme.fg[1], theme.fg[2], 110));
+            painter.text(
+                Pos2::new(x, y),
+                Align2::LEFT_TOP,
+                ghost,
+                opts.font.clone(),
+                Color32::from_rgba_unmultiplied(theme.fg[0], theme.fg[1], theme.fg[2], 110),
+            );
         }
     }
 
     if term.modes.cursor_visible && cursor_row_visible && cx < cols && cy < rows {
         let show = opts.focused || !opts.unfocused_hollow;
-        let blink_on = !term.cursor_style().blink || opts.reduced_motion || opts.cursor_visible_phase;
+        let blink_on =
+            !term.cursor_style().blink || opts.reduced_motion || opts.cursor_visible_phase;
         if show && blink_on {
             let x = rect.left() + cx as f32 * m.char_w;
             let y = rect.top() + cy as f32 * m.row_h;
             let under_cell = term.view_row(cy).get(cx);
-            let base = theme.resolve(&ov, if under_cell.bg != Color::Default { under_cell.fg } else { Color::Default }, true);
+            let base = theme.resolve(
+                &ov,
+                if under_cell.bg != Color::Default {
+                    under_cell.fg
+                } else {
+                    Color::Default
+                },
+                true,
+            );
             let cursor_color = c32(theme.cursor);
             let filled = opts.focused;
-            paint_cursor(&painter, Pos2::new(x, y), m, term.cursor_style().shape, cursor_color, filled, opts.cursor_thickness);
+            paint_cursor(
+                &painter,
+                Pos2::new(x, y),
+                m,
+                term.cursor_style().shape,
+                cursor_color,
+                filled,
+                opts.cursor_thickness,
+            );
             if filled && !under_cell.is_blank() {
                 let ch_s = if under_cell.flags & attr::WIDE_TAIL == 0 {
                     let mut s = String::new();
@@ -389,7 +528,13 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
                     String::new()
                 };
                 if !ch_s.trim().is_empty() {
-                    painter.text(Pos2::new(x, y), Align2::LEFT_TOP, ch_s, opts.font.clone(), c32(theme.cursor_text));
+                    painter.text(
+                        Pos2::new(x, y),
+                        Align2::LEFT_TOP,
+                        ch_s,
+                        opts.font.clone(),
+                        c32(theme.cursor_text),
+                    );
                 }
             }
             let _ = base;
@@ -418,7 +563,13 @@ pub fn paint_pane(ui: &mut egui::Ui, rect: ERect, term: &mut Term, opts: &PaintO
 /// The terminal-drawn status/breadcrumb strip — see `theme::StatusStyle`.
 /// Never touches what the shell prints; purely cosmetic chrome drawn in the
 /// pane's own padding margin.
-fn paint_status_strip(p: &egui::Painter, strip: ERect, theme: &Theme, opts: &PaintOpts, cwd: Option<&str>) {
+fn paint_status_strip(
+    p: &egui::Painter,
+    strip: ERect,
+    theme: &Theme,
+    opts: &PaintOpts,
+    cwd: Option<&str>,
+) {
     use crate::theme::StatusStyle;
     if strip.height() < 10.0 {
         return;
@@ -431,18 +582,33 @@ fn paint_status_strip(p: &egui::Painter, strip: ERect, theme: &Theme, opts: &Pai
         StatusStyle::Hidden => {}
         StatusStyle::Minimal => {
             let text = format!("{}  \u{2022}  {}", opts.user_host, cwd_txt);
-            p.text(Pos2::new(left, y), Align2::LEFT_CENTER, text, small, c32(mix(theme.fg, theme.bg, 0.45)));
+            p.text(
+                Pos2::new(left, y),
+                Align2::LEFT_CENTER,
+                text,
+                small,
+                c32(mix(theme.fg, theme.bg, 0.45)),
+            );
         }
         StatusStyle::Breadcrumb => {
             let text = format!("[ {} ]-[ {} ]", opts.user_host, cwd_txt);
-            p.text(Pos2::new(left, y), Align2::LEFT_CENTER, text, small, c32(theme.prompt));
+            p.text(
+                Pos2::new(left, y),
+                Align2::LEFT_CENTER,
+                text,
+                small,
+                c32(theme.prompt),
+            );
         }
         StatusStyle::Segmented => {
             let pad_x = 7.0;
-            let h = (strip.height() - 6.0).max(12.0).min(20.0);
+            let h = (strip.height() - 6.0).clamp(12.0, 20.0);
             let y0 = y - h / 2.0;
             let mut x = left;
-            for (text, bg, fg) in [(opts.user_host.to_string(), theme.accent, theme.cursor_text), (cwd_txt.to_string(), theme.surface_alt, theme.fg)] {
+            for (text, bg, fg) in [
+                (opts.user_host.to_string(), theme.accent, theme.cursor_text),
+                (cwd_txt.to_string(), theme.surface_alt, theme.fg),
+            ] {
                 if text.is_empty() {
                     continue;
                 }
@@ -451,15 +617,26 @@ fn paint_status_strip(p: &egui::Painter, strip: ERect, theme: &Theme, opts: &Pai
                 // more than good enough for sizing a small chrome pill.
                 let w = text.chars().count() as f32 * small.size * 0.62 + pad_x * 2.0;
                 let seg = ERect::from_min_size(Pos2::new(x, y0), egui::Vec2::new(w, h));
-                p.rect_filled(seg, h * 0.4, Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], 210));
-                p.text(seg.center(), Align2::CENTER_CENTER, text, small.clone(), c32(fg));
+                p.rect_filled(
+                    seg,
+                    h * 0.4,
+                    Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], 210),
+                );
+                p.text(
+                    seg.center(),
+                    Align2::CENTER_CENTER,
+                    text,
+                    small.clone(),
+                    c32(fg),
+                );
                 x += w + 5.0;
             }
         }
     }
 }
 
-fn brighten(rgb: Rgb) -> Rgb {    mix(rgb, [255, 255, 255], 0.35)
+fn brighten(rgb: Rgb) -> Rgb {
+    mix(rgb, [255, 255, 255], 0.35)
 }
 
 fn paint_underline(painter: &egui::Painter, cell_rect: ERect, run: &Run, _theme: &Theme) {
@@ -478,43 +655,88 @@ fn paint_underline(painter: &egui::Painter, cell_rect: ERect, run: &Run, _theme:
             let nx = (x + step).min(x1);
             let y0 = if up { y - amp } else { y + amp };
             let y1 = if up { y + amp } else { y - amp };
-            painter.line_segment([Pos2::new(x, y0), Pos2::new(nx, y1)], Stroke::new(1.0, col));
+            painter.line_segment(
+                [Pos2::new(x, y0), Pos2::new(nx, y1)],
+                Stroke::new(1.0_f32, col),
+            );
             x = nx;
             up = !up;
         }
     } else if run.flags & attr::DOTTED_UL != 0 || run.flags & attr::DASHED_UL != 0 {
-        let dash = if run.flags & attr::DOTTED_UL != 0 { 1.5 } else { 4.0 };
-        let gap = if run.flags & attr::DOTTED_UL != 0 { 2.0 } else { 3.0 };
+        let dash = if run.flags & attr::DOTTED_UL != 0 {
+            1.5
+        } else {
+            4.0
+        };
+        let gap = if run.flags & attr::DOTTED_UL != 0 {
+            2.0
+        } else {
+            3.0
+        };
         let mut x = x0;
         while x < x1 {
             let nx = (x + dash).min(x1);
-            painter.line_segment([Pos2::new(x, y), Pos2::new(nx, y)], Stroke::new(1.4, col));
+            painter.line_segment(
+                [Pos2::new(x, y), Pos2::new(nx, y)],
+                Stroke::new(1.4_f32, col),
+            );
             x = nx + gap;
         }
     } else if run.flags & attr::DOUBLE_UL != 0 {
-        painter.line_segment([Pos2::new(x0, y - 1.5), Pos2::new(x1, y - 1.5)], Stroke::new(1.0, col));
-        painter.line_segment([Pos2::new(x0, y + 1.0), Pos2::new(x1, y + 1.0)], Stroke::new(1.0, col));
+        painter.line_segment(
+            [Pos2::new(x0, y - 1.5), Pos2::new(x1, y - 1.5)],
+            Stroke::new(1.0_f32, col),
+        );
+        painter.line_segment(
+            [Pos2::new(x0, y + 1.0), Pos2::new(x1, y + 1.0)],
+            Stroke::new(1.0_f32, col),
+        );
     } else {
-        painter.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(1.2, col));
+        painter.line_segment(
+            [Pos2::new(x0, y), Pos2::new(x1, y)],
+            Stroke::new(1.2_f32, col),
+        );
     }
 }
 
-fn paint_cursor(painter: &egui::Painter, top_left: Pos2, m: Metrics, shape: CursorShape, color: Color32, filled: bool, thickness: f32) {
+fn paint_cursor(
+    painter: &egui::Painter,
+    top_left: Pos2,
+    m: Metrics,
+    shape: CursorShape,
+    color: Color32,
+    filled: bool,
+    thickness: f32,
+) {
     let rect = ERect::from_min_size(top_left, Vec2::new(m.char_w, m.row_h));
     match shape {
         CursorShape::Block => {
             if filled {
                 painter.rect_filled(rect, 1.0, color);
             } else {
-                painter.rect_stroke(rect, 1.0, Stroke::new(1.5, color));
+                painter.rect_stroke(rect, 1.0, Stroke::new(1.5_f32, color));
             }
         }
         CursorShape::Underline => {
             let y = rect.bottom() - thickness.max(1.0);
-            painter.rect_filled(ERect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), thickness.max(1.0))), 0.0, color);
+            painter.rect_filled(
+                ERect::from_min_size(
+                    Pos2::new(rect.left(), y),
+                    Vec2::new(rect.width(), thickness.max(1.0)),
+                ),
+                0.0,
+                color,
+            );
         }
         CursorShape::Bar => {
-            painter.rect_filled(ERect::from_min_size(rect.left_top(), Vec2::new(thickness.max(1.0), rect.height())), 0.0, color);
+            painter.rect_filled(
+                ERect::from_min_size(
+                    rect.left_top(),
+                    Vec2::new(thickness.max(1.0), rect.height()),
+                ),
+                0.0,
+                color,
+            );
         }
     }
 }
@@ -541,7 +763,11 @@ fn paint_phosphor(painter: &egui::Painter, rect: ERect, term: &Term, m: Metrics,
         let x0 = rect.left() + f.c0 as f32 * m.char_w;
         let x1 = rect.left() + f.c1 as f32 * m.char_w;
         let y = rect.top() + r as f32 * m.row_h;
-        let base = if f.error { [255u8, 60, 60] } else { opts.accent };
+        let base = if f.error {
+            [255u8, 60, 60]
+        } else {
+            opts.accent
+        };
         let alpha = (t * if f.error { 90.0 } else { 55.0 }) as u8;
         painter.rect_filled(
             ERect::from_min_max(Pos2::new(x0, y), Pos2::new(x1, y + m.row_h)),
@@ -566,13 +792,22 @@ enum WidgetView {
 fn describe(w: &mitos_utils::ipc::RichWidget) -> WidgetView {
     use mitos_utils::ipc::RichWidget;
     match w {
-        RichWidget::Button { label, cmd } => WidgetView::Button { label: label.clone(), cmd: cmd.clone() },
+        RichWidget::Button { label, cmd } => WidgetView::Button {
+            label: label.clone(),
+            cmd: cmd.clone(),
+        },
         RichWidget::Progress { percent, .. } => WidgetView::Progress { percent: *percent },
         RichWidget::Sparkline { .. } => WidgetView::Sparkline,
     }
 }
 
-fn paint_widget_view(ui: &mut egui::Ui, rect: ERect, widget_id: u64, view: &WidgetView, term: &mut Term) {
+fn paint_widget_view(
+    ui: &mut egui::Ui,
+    rect: ERect,
+    widget_id: u64,
+    view: &WidgetView,
+    term: &mut Term,
+) {
     // A floating `Area` anchored at the row's own pixel position rather than
     // a nested child `Ui`: it only needs proven-stable `egui::Area` +
     // `ui.horizontal` building blocks (see the settings-gear button and the
@@ -617,7 +852,7 @@ pub fn interact(ui: &mut egui::Ui, rect: ERect, id: egui::Id) -> egui::Response 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::{Pen, Term};
+    use crate::term::Term;
 
     fn theme() -> Theme {
         Theme::dark()
@@ -705,7 +940,11 @@ mod tests {
         t.process(b"\x1b[H\x1b]8;;https://a\x07a\x1b]8;;\x07\x1b]8;;https://b\x07b\x1b]8;;\x07");
         let row = t.view_row(0).clone();
         let runs = coalesce_row(&theme(), &Overrides::default(), &row, false);
-        assert_eq!(runs.len(), 1, "same style, different link ids: still one run");
+        assert_eq!(
+            runs.len(),
+            1,
+            "same style, different link ids: still one run"
+        );
         assert_eq!(runs[0].text, "ab");
     }
 

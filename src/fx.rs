@@ -66,8 +66,8 @@ struct Drop {
 
 pub struct CodeRain {
     drops: Vec<Drop>,
-    density: f32,    // drops per 100px of width
-    opacity: f32,    // master alpha 0.0..=1.0
+    density: f32, // drops per 100px of width
+    opacity: f32, // master alpha 0.0..=1.0
     glyph_size: f32,
     last_rect: Rect,
 }
@@ -91,10 +91,17 @@ impl CodeRain {
             let seed = hash(i as u64 + 0x5EED);
             let x = rect.left() + unit(hash(seed)) * rect.width();
             // Start scattered above/inside the screen so the first frame isn't empty
-            let head = rect.top() + unit(hash(seed ^ 0xA5A5)) * rect.height() * 2.0_f32 - rect.height();
+            let head =
+                rect.top() + unit(hash(seed ^ 0xA5A5)) * rect.height() * 2.0_f32 - rect.height();
             let speed = 40.0_f32 + unit(hash(seed ^ 0x0F0F)) * 160.0_f32;
             let trail = 60.0_f32 + unit(hash(seed ^ 0x1234)) * 200.0_f32;
-            self.drops.push(Drop { x, head, speed, trail, seed });
+            self.drops.push(Drop {
+                x,
+                head,
+                speed,
+                trail,
+                seed,
+            });
         }
         self.last_rect = rect;
     }
@@ -142,7 +149,15 @@ impl CodeRain {
                 let (ch, color) = if i == 0 {
                     // The leading glyph: brightest against whatever
                     // background this theme actually has (see `head`'s doc).
-                    (glyph(hash3(d.seed, tick, 0)), Color32::from_rgba_unmultiplied(head[0], head[1], head[2], (190.0_f32 * self.opacity) as u8))
+                    (
+                        glyph(hash3(d.seed, tick, 0)),
+                        Color32::from_rgba_unmultiplied(
+                            head[0],
+                            head[1],
+                            head[2],
+                            (190.0_f32 * self.opacity) as u8,
+                        ),
+                    )
                 } else {
                     (
                         glyph(hash3(d.seed, tick, i as u64)),
@@ -170,17 +185,26 @@ impl CodeRain {
 pub fn paint_grid(p: &Painter, rect: Rect, now: f64, tint: [u8; 3]) {
     let step = 48.0_f32;
     let drift = (now * 6.0) % step as f64;
-    let line = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], 9));
+    let line = Stroke::new(
+        1.0_f32,
+        Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], 9),
+    );
 
     let mut y = rect.top() - step + drift as f32;
     while y < rect.bottom() {
-        p.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], line);
+        p.line_segment(
+            [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
+            line,
+        );
         y += step;
     }
 
     let mut x = rect.left();
     while x < rect.right() {
-        p.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], line);
+        p.line_segment(
+            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+            line,
+        );
         x += step;
     }
 }
@@ -200,13 +224,19 @@ pub fn paint_sweep(p: &Painter, rect: Rect, now: f64, tint: [u8; 3]) {
         let a = (28.0_f32 * (1.0_f32 - i as f32 / trail_rows as f32)) as u8;
         p.line_segment(
             [Pos2::new(rect.left(), yy), Pos2::new(rect.right(), yy)],
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], a)),
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], a),
+            ),
         );
     }
 
     p.line_segment(
         [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-        Stroke::new(1.5_f32, Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], 55)),
+        Stroke::new(
+            1.5_f32,
+            Color32::from_rgba_unmultiplied(tint[0], tint[1], tint[2], 55),
+        ),
     );
 }
 
@@ -242,12 +272,22 @@ pub fn paint_glow_border(p: &Painter, rect: Rect, radius: f32, color: [u8; 3], i
         let grow = i as f32 * 1.6 + 1.0;
         let a = (peak * (1.0 - i as f32 / PASSES as f32)).max(4.0) as u8;
         let r = rect.expand(grow);
-        let stroke = Stroke::new(1.0 + grow * 0.4, Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a));
+        let stroke = Stroke::new(
+            1.0 + grow * 0.4,
+            Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a),
+        );
         p.rect_stroke(r, radius + grow, stroke);
     }
     // A crisp inner line ties the glow to an actual edge instead of just haze.
     let edge_a = (peak + 60.0).min(255.0) as u8;
-    p.rect_stroke(rect, radius, Stroke::new(1.0, Color32::from_rgba_unmultiplied(color[0], color[1], color[2], edge_a)));
+    p.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(
+            1.0_f32,
+            Color32::from_rgba_unmultiplied(color[0], color[1], color[2], edge_a),
+        ),
+    );
 }
 
 /// The frosted-glass surface fill: a translucent base plus one restrained
@@ -255,11 +295,19 @@ pub fn paint_glow_border(p: &Painter, rect: Rect, radius: f32, color: [u8; 3], i
 /// button). `base_alpha` is 0..=255. What shows "through" the glass is
 /// `paint_ambient_backdrop`'s job, painted first, underneath this.
 pub fn paint_glass_surface(p: &Painter, rect: Rect, radius: f32, base: [u8; 3], base_alpha: u8) {
-    p.rect_filled(rect, radius, Color32::from_rgba_unmultiplied(base[0], base[1], base[2], base_alpha));
+    p.rect_filled(
+        rect,
+        radius,
+        Color32::from_rgba_unmultiplied(base[0], base[1], base[2], base_alpha),
+    );
     let highlight_h = (rect.height() * 0.16).min(40.0);
     if highlight_h > 2.0 {
         let band = Rect::from_min_size(rect.min, Vec2::new(rect.width(), highlight_h));
-        p.rect_filled(band, radius, Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+        p.rect_filled(
+            band,
+            radius,
+            Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+        );
     }
 }
 
@@ -280,7 +328,11 @@ pub fn paint_vignette(p: &Painter, rect: Rect, strength: f32) {
             continue;
         }
         let width = (max_inset / PASSES as f32) + 1.0;
-        p.rect_stroke(rect.shrink(inset), 0.0, Stroke::new(width, Color32::from_rgba_unmultiplied(0, 0, 0, a)));
+        p.rect_stroke(
+            rect.shrink(inset),
+            0.0,
+            Stroke::new(width, Color32::from_rgba_unmultiplied(0, 0, 0, a)),
+        );
     }
 }
 
@@ -292,7 +344,10 @@ pub fn paint_hud_accents(p: &Painter, rect: Rect, color: [u8; 3], alpha: u8) {
     if len < 3.0 {
         return;
     }
-    let stroke = Stroke::new(1.2, Color32::from_rgba_unmultiplied(color[0], color[1], color[2], alpha));
+    let stroke = Stroke::new(
+        1.2_f32,
+        Color32::from_rgba_unmultiplied(color[0], color[1], color[2], alpha),
+    );
     for (c, sx, sy) in [
         (rect.left_top(), 1.0_f32, 1.0_f32),
         (rect.right_top(), -1.0, 1.0),
@@ -314,14 +369,31 @@ pub fn paint_hud_accents(p: &Painter, rect: Rect, color: [u8; 3], alpha: u8) {
 /// constant animation, and a static backdrop also means painting it never
 /// forces a repaint the way an animated one would — the two goals turned
 /// out to want the same answer.
-pub fn paint_ambient_backdrop(p: &Painter, rect: Rect, seed: u64, base: [u8; 3], accent_a: [u8; 3], accent_b: [u8; 3]) {
+pub fn paint_ambient_backdrop(
+    p: &Painter,
+    rect: Rect,
+    seed: u64,
+    base: [u8; 3],
+    accent_a: [u8; 3],
+    accent_b: [u8; 3],
+) {
     p.rect_filled(rect, 0.0, Color32::from_rgb(base[0], base[1], base[2]));
     let short = rect.width().min(rect.height());
-    for (i, (color, size_frac, peak_alpha)) in [(accent_a, 0.55, 26u8), (accent_b, 0.42, 22), (base, 0.30, 30)].into_iter().enumerate() {
+    for (i, (color, size_frac, peak_alpha)) in [
+        (accent_a, 0.55, 26u8),
+        (accent_b, 0.42, 22),
+        (base, 0.30, 30),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let h = hash3(seed, i as u64, 0x0B1);
         let fx = 0.15 + 0.7 * unit(h);
         let fy = 0.15 + 0.7 * unit(hash(h));
-        let center = Pos2::new(rect.left() + rect.width() * fx, rect.top() + rect.height() * fy);
+        let center = Pos2::new(
+            rect.left() + rect.width() * fx,
+            rect.top() + rect.height() * fy,
+        );
         paint_soft_blob(p, center, short * size_frac, color, peak_alpha);
     }
 }
@@ -337,10 +409,13 @@ fn paint_soft_blob(p: &Painter, center: Pos2, radius: f32, color: [u8; 3], peak_
         if a == 0 {
             continue;
         }
-        p.circle_filled(center, r, Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a));
+        p.circle_filled(
+            center,
+            r,
+            Color32::from_rgba_unmultiplied(color[0], color[1], color[2], a),
+        );
     }
 }
-
 
 #[cfg(test)]
 mod tests {

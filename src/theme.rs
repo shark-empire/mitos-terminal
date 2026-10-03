@@ -44,7 +44,7 @@ impl TabStyle {
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             TabStyle::Rounded => "rounded",
             TabStyle::Underline => "underline",
@@ -77,7 +77,7 @@ impl StatusStyle {
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             StatusStyle::Hidden => "hidden",
             StatusStyle::Minimal => "minimal",
@@ -162,7 +162,9 @@ impl Theme {
 
     pub fn by_name(name: &str) -> Option<Theme> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "futuristic-scifi" | "futuristic" | "scifi" | "mitos-dark" | "dark" => Some(Self::futuristic_scifi()),
+            "futuristic-scifi" | "futuristic" | "scifi" | "mitos-dark" | "dark" => {
+                Some(Self::futuristic_scifi())
+            }
             "cyberpunk" => Some(Self::cyberpunk()),
             "glass-neon" | "glass" | "neon" => Some(Self::glass_neon()),
             "minimal-dark" | "minimal" => Some(Self::minimal_dark()),
@@ -806,7 +808,11 @@ pub fn ensure_contrast(fg: Rgb, bg: Rgb, min: f32) -> Rgb {
     if contrast_ratio(fg, bg) >= min {
         return fg;
     }
-    let target: Rgb = if luminance(bg) > 0.5 { [0, 0, 0] } else { [255, 255, 255] };
+    let target: Rgb = if luminance(bg) > 0.5 {
+        [0, 0, 0]
+    } else {
+        [255, 255, 255]
+    };
     for step in 1..=20 {
         let c = mix(fg, target, step as f32 / 20.0);
         if contrast_ratio(c, bg) >= min {
@@ -839,7 +845,10 @@ mod tests {
     use super::*;
 
     fn all_presets() -> Vec<Theme> {
-        THEME_PRESETS.iter().map(|(id, _)| Theme::by_name(id).unwrap()).collect()
+        THEME_PRESETS
+            .iter()
+            .map(|(id, _)| Theme::by_name(id).unwrap())
+            .collect()
     }
 
     #[test]
@@ -889,7 +898,10 @@ mod tests {
                 continue;
             }
             let t = Theme::by_name(id).unwrap();
-            assert_eq!(&t.id, id, "constructor id must match its THEME_PRESETS slug");
+            assert_eq!(
+                &t.id, id,
+                "constructor id must match its THEME_PRESETS slug"
+            );
             let expect_light = *id == "light" || *id == "high-contrast-light";
             assert_eq!(t.light, expect_light, "{id}");
         }
@@ -903,7 +915,12 @@ mod tests {
     fn every_preset_meets_aa_contrast_for_body_text() {
         for t in all_presets() {
             let ratio = contrast_ratio(t.fg, t.bg);
-            assert!(ratio >= 4.5, "{} fg/bg contrast only {:.2}:1", t.label, ratio);
+            assert!(
+                ratio >= 4.5,
+                "{} fg/bg contrast only {:.2}:1",
+                t.label,
+                ratio
+            );
         }
     }
 
@@ -914,12 +931,29 @@ mod tests {
     #[test]
     fn every_ansi_colour_stays_legible_against_its_background() {
         let mut themes = all_presets();
-        let variants: Vec<Theme> = themes.iter().map(|t| if t.light { t.as_dark_variant() } else { t.as_light_variant() }).collect();
+        let variants: Vec<Theme> = themes
+            .iter()
+            .map(|t| {
+                if t.light {
+                    t.as_dark_variant()
+                } else {
+                    t.as_light_variant()
+                }
+            })
+            .collect();
         themes.extend(variants);
         for t in themes {
             for i in 1..16 {
                 let r = contrast_ratio(t.ansi[i], t.bg);
-                assert!(r >= 3.0, "{}: ANSI {} {:?} on bg {:?} is only {:.2}:1", t.label, i, t.ansi[i], t.bg, r);
+                assert!(
+                    r >= 3.0,
+                    "{}: ANSI {} {:?} on bg {:?} is only {:.2}:1",
+                    t.label,
+                    i,
+                    t.ansi[i],
+                    t.bg,
+                    r
+                );
             }
         }
     }
@@ -933,9 +967,17 @@ mod tests {
                 ("glow_intensity", t.glow_intensity),
                 ("vignette", t.vignette),
             ] {
-                assert!((0.0..=1.0).contains(&v), "{}.{name} = {v} out of 0..=1", t.label);
+                assert!(
+                    (0.0..=1.0).contains(&v),
+                    "{}.{name} = {v} out of 0..=1",
+                    t.label
+                );
             }
-            assert!(t.corner_radius >= 0.0 && t.border_width >= 0.0, "{}", t.label);
+            assert!(
+                t.corner_radius >= 0.0 && t.border_width >= 0.0,
+                "{}",
+                t.label
+            );
         }
     }
 
@@ -945,9 +987,24 @@ mod tests {
         // / thick glowing borders." None of the atmospheric knobs should
         // ever reach full intensity on a shipped preset.
         for t in all_presets() {
-            assert!(t.glow_intensity <= 0.6, "{}: glow_intensity {} too strong", t.label, t.glow_intensity);
-            assert!(t.border_width <= 2.0, "{}: border_width {} too thick", t.label, t.border_width);
-            assert!(t.vignette <= 0.4, "{}: vignette {} too strong", t.label, t.vignette);
+            assert!(
+                t.glow_intensity <= 0.6,
+                "{}: glow_intensity {} too strong",
+                t.label,
+                t.glow_intensity
+            );
+            assert!(
+                t.border_width <= 2.0,
+                "{}: border_width {} too thick",
+                t.label,
+                t.border_width
+            );
+            assert!(
+                t.vignette <= 0.4,
+                "{}: vignette {} too strong",
+                t.label,
+                t.vignette
+            );
         }
         // Glass Neon specifically: "wallpaper remains visible but heavily
         // subdued... text remains extremely readable" — opacity must drop
@@ -959,9 +1016,17 @@ mod tests {
     #[test]
     fn light_and_dark_variants_round_trip_and_preserve_hue_identity() {
         for t in all_presets() {
-            let flipped = if t.light { t.as_dark_variant() } else { t.as_light_variant() };
+            let flipped = if t.light {
+                t.as_dark_variant()
+            } else {
+                t.as_light_variant()
+            };
             assert_ne!(flipped.light, t.light);
-            assert!(contrast_ratio(flipped.fg, flipped.bg) >= 4.5, "{}", flipped.label);
+            assert!(
+                contrast_ratio(flipped.fg, flipped.bg) >= 4.5,
+                "{}",
+                flipped.label
+            );
             // flipping preserves *some* relationship to the original accent
             // hue rather than collapsing to grey (a crude but effective
             // check: the derived accent must still differ from pure fg/bg).
@@ -999,7 +1064,12 @@ mod tests {
         for s in [TabStyle::Rounded, TabStyle::Underline, TabStyle::Boxed] {
             assert_eq!(TabStyle::parse(s.as_str()), s);
         }
-        for s in [StatusStyle::Hidden, StatusStyle::Minimal, StatusStyle::Breadcrumb, StatusStyle::Segmented] {
+        for s in [
+            StatusStyle::Hidden,
+            StatusStyle::Minimal,
+            StatusStyle::Breadcrumb,
+            StatusStyle::Segmented,
+        ] {
             assert_eq!(StatusStyle::parse(s.as_str()), s);
         }
         assert_eq!(TabStyle::parse("bogus"), TabStyle::Rounded);

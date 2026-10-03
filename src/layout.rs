@@ -2,7 +2,7 @@
 //!
 //! Deliberately free of GUI types: a [`Rect`] here is just four `f32`s, so the
 //! whole module is unit-testable without an `egui::Context`. `render.rs` walks
-//! [`Layout::rects`] and paints each pane's [`Session`](crate::session::Session)
+//! [`Tab::rects`] and paints each pane's [`Session`](crate::session::Session)
 //! (looked up by [`PaneId`]) into the returned rectangle.
 
 use std::collections::HashSet;
@@ -28,7 +28,12 @@ pub enum FocusDir {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Leaf(PaneId),
-    Split { axis: Axis, ratio: f32, a: Box<Node>, b: Box<Node> },
+    Split {
+        axis: Axis,
+        ratio: f32,
+        a: Box<Node>,
+        b: Box<Node>,
+    },
 }
 
 impl Node {
@@ -61,7 +66,12 @@ pub struct Rect {
 }
 
 impl Rect {
-    pub const FULL: Rect = Rect { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0 };
+    pub const FULL: Rect = Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 1.0,
+        y1: 1.0,
+    };
 
     pub fn center(&self) -> (f32, f32) {
         ((self.x0 + self.x1) * 0.5, (self.y0 + self.y1) * 0.5)
@@ -97,7 +107,13 @@ pub struct Tab {
 
 impl Tab {
     fn new(id: u64, pane: PaneId) -> Tab {
-        Tab { id, title: None, root: Node::Leaf(pane), focused: pane, zoomed: None }
+        Tab {
+            id,
+            title: None,
+            root: Node::Leaf(pane),
+            focused: pane,
+            zoomed: None,
+        }
     }
 
     pub fn focused(&self) -> PaneId {
@@ -134,7 +150,10 @@ impl Tab {
     }
 
     fn rect_of(&self, id: PaneId) -> Option<Rect> {
-        self.rects(Rect::FULL).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+        self.rects(Rect::FULL)
+            .into_iter()
+            .find(|(p, _)| *p == id)
+            .map(|(_, r)| r)
     }
 }
 
@@ -154,11 +173,18 @@ fn layout_rects(node: &Node, area: Rect, out: &mut Vec<(PaneId, Rect)>) {
 fn split_leaf(node: &mut Node, target: PaneId, axis: Axis, new: PaneId, ratio: f32) -> bool {
     match node {
         Node::Leaf(id) if *id == target => {
-            *node = Node::Split { axis, ratio, a: Box::new(Node::Leaf(target)), b: Box::new(Node::Leaf(new)) };
+            *node = Node::Split {
+                axis,
+                ratio,
+                a: Box::new(Node::Leaf(target)),
+                b: Box::new(Node::Leaf(new)),
+            };
             true
         }
         Node::Leaf(_) => false,
-        Node::Split { a, b, .. } => split_leaf(a, target, axis, new, ratio) || split_leaf(b, target, axis, new, ratio),
+        Node::Split { a, b, .. } => {
+            split_leaf(a, target, axis, new, ratio) || split_leaf(b, target, axis, new, ratio)
+        }
     }
 }
 
@@ -178,7 +204,12 @@ fn remove_leaf(node: &Node, target: PaneId) -> Option<Node> {
             let ra = remove_leaf(a, target);
             let rb = remove_leaf(b, target);
             match (ra, rb) {
-                (Some(a2), Some(b2)) => Some(Node::Split { axis: *axis, ratio: *ratio, a: Box::new(a2), b: Box::new(b2) }),
+                (Some(a2), Some(b2)) => Some(Node::Split {
+                    axis: *axis,
+                    ratio: *ratio,
+                    a: Box::new(a2),
+                    b: Box::new(b2),
+                }),
                 (Some(a2), None) => Some(a2),
                 (None, Some(b2)) => Some(b2),
                 (None, None) => None,
@@ -199,7 +230,11 @@ pub struct Layout {
 
 impl Layout {
     pub fn new(first_pane: PaneId) -> Layout {
-        Layout { tabs: vec![Tab::new(1, first_pane)], active: 0, next_tab_id: 2 }
+        Layout {
+            tabs: vec![Tab::new(1, first_pane)],
+            active: 0,
+            next_tab_id: 2,
+        }
     }
 
     pub fn tabs(&self) -> &[Tab] {
@@ -222,7 +257,8 @@ impl Layout {
         self.active_tab().focused
     }
 
-    /// Every pane in every tab — what the caller must keep a live [`Session`] for.
+    /// Every pane in every tab — what the caller must keep a live
+    /// [`Session`](crate::session::Session) for.
     pub fn all_panes(&self) -> HashSet<PaneId> {
         self.tabs.iter().flat_map(|t| t.panes()).collect()
     }
@@ -321,7 +357,11 @@ impl Layout {
 
     pub fn toggle_zoom(&mut self) {
         let tab = self.active_tab_mut();
-        tab.zoomed = if tab.zoomed.is_some() { None } else { Some(tab.focused) };
+        tab.zoomed = if tab.zoomed.is_some() {
+            None
+        } else {
+            Some(tab.focused)
+        };
     }
 
     /// Move focus to the nearest pane in `dir`, by comparing rect centres
@@ -409,7 +449,10 @@ mod tests {
         let r2 = rects.iter().find(|(p, _)| *p == 2).unwrap().1;
         let r3 = rects.iter().find(|(p, _)| *p == 3).unwrap().1;
         assert!((r2.y1 - r3.y0).abs() < 1e-6);
-        assert!((r2.x0 - r3.x0).abs() < 1e-6, "still in the same column as each other");
+        assert!(
+            (r2.x0 - r3.x0).abs() < 1e-6,
+            "still in the same column as each other"
+        );
     }
 
     #[test]
@@ -418,7 +461,11 @@ mod tests {
         l.split(Axis::X, 2);
         assert!(!l.close_pane(2));
         assert_eq!(l.active_tab().panes(), vec![1]);
-        assert_eq!(l.focused_pane(), 1, "focus falls back to the remaining pane");
+        assert_eq!(
+            l.focused_pane(),
+            1,
+            "focus falls back to the remaining pane"
+        );
     }
 
     #[test]

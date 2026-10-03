@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
-use egui::{Color32, Pos2, Rect as ERect, Sense, Vec2};
+use egui::{Color32, Pos2, Rect as ERect, Sense};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::a11y::AnnounceQueue;
@@ -30,7 +30,7 @@ use crate::pty::SpawnOptions;
 use crate::render::{self, Metrics, PaintOpts};
 use crate::security::{self, LinkDecision, Paste};
 use crate::session::{Session, SessionState};
-use crate::term::{SelMode, SelPoint, Term, TermEvent};
+use crate::term::{SelMode, Term, TermEvent};
 use crate::theme::{self, Rgb, StatusStyle, TabStyle, Theme};
 
 const MIN_COLS: usize = 4;
@@ -57,7 +57,6 @@ struct PaneState {
     drag_active: bool,
     last_seqno: u64,
     notified_finish: bool,
-    notified_long_running: bool,
 }
 
 pub struct TerminalApp {
@@ -93,12 +92,21 @@ pub struct TerminalApp {
     fullscreen: bool,
     notify_times: std::collections::VecDeque<f64>,
     last_focused_pane: Option<PaneId>,
+    /// Whether the OS window has keyboard focus, tracked from `egui::Event::WindowFocused`.
+    window_focused: bool,
     /// `user@host`, computed once at startup for the status-strip chrome
     /// (`theme::StatusStyle`) — never touches what the shell prints.
     user_host: String,
 }
 
-fn new_pane(app_ctx: &egui::Context, config: &Config, home: &HomeConf, cols: usize, rows: usize, profile_name: Option<&str>) -> PaneState {
+fn new_pane(
+    app_ctx: &egui::Context,
+    config: &Config,
+    home: &HomeConf,
+    cols: usize,
+    rows: usize,
+    profile_name: Option<&str>,
+) -> PaneState {
     let profile = config.profile(profile_name);
     let opts = SpawnOptions {
         shell: profile.shell.clone(),
@@ -111,7 +119,12 @@ fn new_pane(app_ctx: &egui::Context, config: &Config, home: &HomeConf, cols: usi
         pixel_height: 0,
         shell_integration: config.general.shell_integration,
     };
-    let session = Session::spawn(opts, config.scrollback.lines, config.term_policy(), app_ctx.clone());
+    let session = Session::spawn(
+        opts,
+        config.scrollback.lines,
+        config.term_policy(),
+        app_ctx.clone(),
+    );
     // So OSC 10/11/12 colour *queries* (vim, bat, delta detecting light vs
     // dark) get the theme actually in effect from the moment this pane
     // exists, not the Term's hardcoded construction-time fallback.
@@ -119,7 +132,11 @@ fn new_pane(app_ctx: &egui::Context, config: &Config, home: &HomeConf, cols: usi
     if let Ok(mut t) = session.term().lock() {
         t.set_theme_colors(resolved.fg, resolved.bg, resolved.cursor, resolved.ansi);
     }
-    let rain = if config.rain_enabled(home) { Some(fx::CodeRain::new(10.0, 0.55)) } else { None };
+    let rain = if config.rain_enabled(home) {
+        Some(fx::CodeRain::new(10.0, 0.55))
+    } else {
+        None
+    };
     PaneState {
         session,
         rain,
@@ -129,7 +146,6 @@ fn new_pane(app_ctx: &egui::Context, config: &Config, home: &HomeConf, cols: usi
         drag_active: false,
         last_seqno: 0,
         notified_finish: false,
-        notified_long_running: false,
     }
 }
 
@@ -148,6 +164,7 @@ impl TerminalApp {
 
         let font = render::font_id(&config.font.family, config.font.size);
         let metrics = render::measure(&cc.egui_ctx, &font);
+        let metrics_font_size = config.font.size;
 
         let first = new_pane(&cc.egui_ctx, &config, &home, 80, 24, None);
         let pane_id: PaneId = 1;
@@ -186,7 +203,7 @@ impl TerminalApp {
             search_query: String::new(),
             font,
             metrics,
-            metrics_font_size: config.font.size,
+            metrics_font_size,
             config_dirty,
             _watcher: watcher,
             pending_paste: None,
@@ -197,6 +214,7 @@ impl TerminalApp {
             fullscreen: false,
             notify_times: std::collections::VecDeque::new(),
             last_focused_pane: None,
+            window_focused: true,
             user_host: local_user_host(),
         }
     }
@@ -217,7 +235,8 @@ impl TerminalApp {
         self.font = render::font_id(&self.config.font.family, self.config.font.size);
         self.metrics = render::measure(ctx, &self.font);
         self.metrics_font_size = self.config.font.size;
-        self.registry.set_allow_buffer_read(self.config.security.ipc_buffer_read);
+        self.registry
+            .set_allow_buffer_read(self.config.security.ipc_buffer_read);
         let want_rain = self.config.rain_enabled(&self.home);
         for pane in self.panes.values_mut() {
             match (want_rain, &pane.rain) {
@@ -247,7 +266,12 @@ impl TerminalApp {
     fn sync_theme_colors_to_panes(&self) {
         for pane in self.panes.values() {
             if let Ok(mut t) = pane.session.term().lock() {
-                t.set_theme_colors(self.theme.fg, self.theme.bg, self.theme.cursor, self.theme.ansi);
+                t.set_theme_colors(
+                    self.theme.fg,
+                    self.theme.bg,
+                    self.theme.cursor,
+                    self.theme.ansi,
+                );
             }
         }
     }
@@ -296,7 +320,11 @@ impl TerminalApp {
     }
 
     fn request_close_pane(&mut self, ctx: &egui::Context, pane_id: PaneId) {
-        let running_job = self.panes.get(&pane_id).map(|p| p.session.has_foreground_job()).unwrap_or(false);
+        let running_job = self
+            .panes
+            .get(&pane_id)
+            .map(|p| p.session.has_foreground_job())
+            .unwrap_or(false);
         if self.config.general.confirm_close_running && running_job {
             self.pending_close = Some(pane_id);
         } else {
@@ -343,12 +371,25 @@ impl TerminalApp {
             Action::ZoomIn => self.set_zoom(1.0, ctx),
             Action::ZoomOut => self.set_zoom(-1.0, ctx),
             Action::ZoomReset => self.set_zoom(self.config.font.size - self.metrics_font_size, ctx),
-            Action::ScrollPageUp => self.with_focused_term(|t| { let r = t.rows(); t.scroll_display(r as isize); }),
-            Action::ScrollPageDown => self.with_focused_term(|t| { let r = t.rows(); t.scroll_display(-(r as isize)); }),
-            Action::ScrollTop => self.with_focused_term(|t| { let n = t.scrollback_len(); t.scroll_display(n as isize); }),
+            Action::ScrollPageUp => self.with_focused_term(|t| {
+                let r = t.rows();
+                t.scroll_display(r as isize);
+            }),
+            Action::ScrollPageDown => self.with_focused_term(|t| {
+                let r = t.rows();
+                t.scroll_display(-(r as isize));
+            }),
+            Action::ScrollTop => self.with_focused_term(|t| {
+                let n = t.scrollback_len();
+                t.scroll_display(n as isize);
+            }),
             Action::ScrollBottom => self.with_focused_term(|t| t.scroll_to_bottom()),
-            Action::ScrollLineUp => self.with_focused_term(|t| { t.scroll_display(1); }),
-            Action::ScrollLineDown => self.with_focused_term(|t| { t.scroll_display(-1); }),
+            Action::ScrollLineUp => self.with_focused_term(|t| {
+                t.scroll_display(1);
+            }),
+            Action::ScrollLineDown => self.with_focused_term(|t| {
+                t.scroll_display(-1);
+            }),
             Action::PrevPrompt => self.with_focused_term(|t| {
                 let cur = t.view_abs(0);
                 if let Some(l) = t.jump_prompt(cur, true) {
@@ -378,7 +419,9 @@ impl TerminalApp {
     }
 
     fn send_focus_report(&self, pane_id: PaneId, focused: bool) {
-        let wants = self.with_pane_term_ret(pane_id, |t| t.modes.focus_events).unwrap_or(false);
+        let wants = self
+            .with_pane_term_ret(pane_id, |t| t.modes.focus_events)
+            .unwrap_or(false);
         if wants {
             if let Some(p) = self.panes.get(&pane_id) {
                 p.session.write(input::focus_report(focused).to_vec());
@@ -395,7 +438,13 @@ impl TerminalApp {
     }
 
     fn copy_focused(&mut self) {
-        let text = self.panes.get(&self.layout.focused_pane()).and_then(|p| p.session.term().lock().ok().and_then(|t| t.selection_text()));
+        let text = self.panes.get(&self.layout.focused_pane()).and_then(|p| {
+            p.session
+                .term()
+                .lock()
+                .ok()
+                .and_then(|t| t.selection_text())
+        });
         if let Some(t) = text {
             self.clipboard.set_text(t);
         }
@@ -406,14 +455,31 @@ impl TerminalApp {
             return;
         }
         let pane = self.layout.focused_pane();
-        let bracketed = self.panes.get(&pane).map(|p| p.session.term().lock().map(|t| t.modes.bracketed_paste).unwrap_or(false)).unwrap_or(false);
+        let bracketed = self
+            .panes
+            .get(&pane)
+            .map(|p| {
+                p.session
+                    .term()
+                    .lock()
+                    .map(|t| t.modes.bracketed_paste)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
         let paste = security::prepare_paste(&text, bracketed, &self.config.paste_config());
         if paste.refused {
-            self.announce.push("Paste was too large and was not sent", true);
+            self.announce
+                .push("Paste was too large and was not sent", true);
             return;
         }
         match &paste.needs_confirm {
-            Some(reason) => self.pending_paste = Some(PendingPaste { pane, reason: reason.clone(), paste }),
+            Some(reason) => {
+                self.pending_paste = Some(PendingPaste {
+                    pane,
+                    reason: reason.clone(),
+                    paste,
+                })
+            }
             None => {
                 if let Some(p) = self.panes.get(&pane) {
                     p.session.write(paste.bytes);
@@ -423,12 +489,15 @@ impl TerminalApp {
     }
 
     fn open_link(&mut self, pane: PaneId, url: String, visible_text: Option<String>) {
-        let decision = security::evaluate_link(&url, visible_text.as_deref(), &self.config.link_policy());
+        let decision =
+            security::evaluate_link(&url, visible_text.as_deref(), &self.config.link_policy());
         match decision {
             LinkDecision::Open => {
                 crate::platform::open_external(&url);
             }
-            LinkDecision::Confirm(reason) => self.pending_link = Some(PendingLink { pane, url, reason }),
+            LinkDecision::Confirm(reason) => {
+                self.pending_link = Some(PendingLink { pane, url, reason })
+            }
             LinkDecision::Deny(_) => {}
         }
     }
@@ -454,7 +523,7 @@ impl TerminalApp {
     }
 
     fn drain_pane_events(&mut self, ctx: &egui::Context, now: f64, id: PaneId) {
-        let (events, exited_now, foreground_name) = {
+        let (events, exited_now) = {
             let pane = match self.panes.get(&id) {
                 Some(p) => p,
                 None => return,
@@ -469,9 +538,12 @@ impl TerminalApp {
                 Ok(t) => t,
                 Err(_) => return,
             };
-            (t.take_events(), !pane.session.is_running(), pane.session.foreground_name())
+            (t.take_events(), !pane.session.is_running())
         };
         let long_running = self.config.notifications.long_command_secs;
+        // `only_when_unfocused` used to be tested as if it meant "notify" and never looked at
+        // window focus at all.
+        let notify_here = !self.config.notifications.only_when_unfocused || !self.window_focused;
         for ev in events {
             match ev {
                 TermEvent::PtyWrite(bytes) => {
@@ -512,11 +584,22 @@ impl TerminalApp {
                         p.session.write(format!("{command}\n").into_bytes());
                     }
                 }
-                TermEvent::CommandFinished { duration, command, exit } => {
+                TermEvent::CommandFinished {
+                    duration,
+                    command,
+                    exit,
+                } => {
                     if duration.as_secs() >= long_running {
                         let ok = exit == Some(0);
-                        self.announce.push(format!("{} finished{}", short_cmd(&command), if ok { "" } else { " with an error" }), !ok);
-                        if self.config.notifications.only_when_unfocused && self.notify_allowed(now) {
+                        self.announce.push(
+                            format!(
+                                "{} finished{}",
+                                short_cmd(&command),
+                                if ok { "" } else { " with an error" }
+                            ),
+                            !ok,
+                        );
+                        if notify_here && self.notify_allowed(now) {
                             crate::ipc::notify_user("Command finished".into(), short_cmd(&command));
                         }
                     }
@@ -527,7 +610,12 @@ impl TerminalApp {
                     // second drain (which would find nothing left to take).
                     self.clipboard.set_text(text);
                 }
-                TermEvent::ColorsChanged | TermEvent::Title(_) | TermEvent::Cwd(_) | TermEvent::Progress { .. } | TermEvent::CommandStarted { .. } | TermEvent::BlockClosed { .. } => {}
+                TermEvent::ColorsChanged
+                | TermEvent::Title(_)
+                | TermEvent::Cwd(_)
+                | TermEvent::Progress { .. }
+                | TermEvent::CommandStarted { .. }
+                | TermEvent::BlockClosed { .. } => {}
             }
         }
         if exited_now {
@@ -535,12 +623,12 @@ impl TerminalApp {
                 if !pane.notified_finish {
                     pane.notified_finish = true;
                     if let SessionState::Exited(info) = pane.session.state() {
-                        self.announce.push(format!("Shell {}", info.describe()), false);
+                        self.announce
+                            .push(format!("Shell {}", info.describe()), false);
                     }
                 }
             }
         }
-        let _ = foreground_name;
     }
 
     fn tick_pane(&mut self, now: f64, dt: f32, id: PaneId) -> bool {
@@ -572,20 +660,39 @@ impl TerminalApp {
 /// currently-resolved theme actually uses for this slot, shown whenever no
 /// override is set — never blank, and never wrong once a preset changes.
 /// Returns whether the override changed this frame.
-fn color_override_row(ui: &mut egui::Ui, label: &str, override_field: &mut Option<String>, fallback: Rgb) -> bool {
+fn color_override_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    override_field: &mut Option<String>,
+    fallback: Rgb,
+) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(label);
-        let current = override_field.as_deref().and_then(theme::parse_hex).unwrap_or(fallback);
+        let current = override_field
+            .as_deref()
+            .and_then(theme::parse_hex)
+            .unwrap_or(fallback);
         let (swatch, _) = ui.allocate_exact_size(egui::Vec2::new(18.0, 18.0), egui::Sense::hover());
-        ui.painter().rect_filled(swatch, 3.0, Color32::from_rgb(current[0], current[1], current[2]));
-        ui.painter().rect_stroke(swatch, 3.0, egui::Stroke::new(1.0, Color32::from_gray(90)));
-        let mut text = override_field.clone().unwrap_or_else(|| theme::to_hex(fallback));
-        if ui.add(egui::TextEdit::singleline(&mut text).desired_width(72.0)).changed() {
-            if theme::parse_hex(&text).is_some() {
-                *override_field = Some(text);
-                changed = true;
-            }
+        ui.painter().rect_filled(
+            swatch,
+            3.0,
+            Color32::from_rgb(current[0], current[1], current[2]),
+        );
+        ui.painter().rect_stroke(
+            swatch,
+            3.0,
+            egui::Stroke::new(1.0_f32, Color32::from_gray(90)),
+        );
+        let mut text = override_field
+            .clone()
+            .unwrap_or_else(|| theme::to_hex(fallback));
+        let edited = ui
+            .add(egui::TextEdit::singleline(&mut text).desired_width(72.0))
+            .changed();
+        if edited && theme::parse_hex(&text).is_some() {
+            *override_field = Some(text);
+            changed = true;
         }
         if override_field.is_some() && ui.small_button("Reset").clicked() {
             *override_field = None;
@@ -598,8 +705,12 @@ fn color_override_row(ui: &mut egui::Ui, label: &str, override_field: &mut Optio
 /// `user@host` for the status-strip chrome. Best-effort: an empty piece is
 /// simply omitted rather than shown as "unknown".
 fn local_user_host() -> String {
-    let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_default();
-    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string()).unwrap_or_default();
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default();
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     match (user.is_empty(), host.is_empty()) {
         (false, false) => format!("{user}@{host}"),
         (false, true) => user,
@@ -629,7 +740,12 @@ fn spawn_config_watcher(dirty: Arc<AtomicBool>, ctx: egui::Context) -> Option<Re
     let dir = config::config_dir();
     let _ = std::fs::create_dir_all(&dir);
     let (tx, rx) = std_mpsc::channel();
-    let mut watcher = match RecommendedWatcher::new(move |res| { let _ = tx.send(res); }, NotifyConfig::default()) {
+    let mut watcher = match RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        NotifyConfig::default(),
+    ) {
         Ok(w) => w,
         Err(_) => return None,
     };
@@ -639,7 +755,10 @@ fn spawn_config_watcher(dirty: Arc<AtomicBool>, ctx: egui::Context) -> Option<Re
     std::thread::spawn(move || {
         for event in rx.into_iter().flatten() {
             let relevant = event.paths.iter().any(|p| {
-                matches!(p.file_name().and_then(|n| n.to_str()), Some("terminal.toml") | Some("home.conf"))
+                matches!(
+                    p.file_name().and_then(|n| n.to_str()),
+                    Some("terminal.toml") | Some("home.conf")
+                )
             });
             if relevant {
                 dirty.store(true, Ordering::Relaxed);
@@ -669,6 +788,13 @@ impl eframe::App for TerminalApp {
         let now = ctx.input(|i| i.time);
         let dt = (now - self.last_time).clamp(0.0, 0.1) as f32;
         self.last_time = now;
+        ctx.input(|i| {
+            for event in &i.events {
+                if let egui::Event::WindowFocused(focused) = event {
+                    self.window_focused = *focused;
+                }
+            }
+        });
 
         // ----- global keyboard shortcuts (menu-style actions) --------------
         let focused_pane = self.layout.focused_pane();
@@ -685,7 +811,9 @@ impl eframe::App for TerminalApp {
             let mods = i.modifiers;
             self.keymap
                 .iter()
-                .filter(|(c, _)| i.key_pressed(c.key) && c.matches(c.key, mods.ctrl, mods.shift, mods.alt))
+                .filter(|(c, _)| {
+                    i.key_pressed(c.key) && c.matches(c.key, mods.ctrl, mods.shift, mods.alt)
+                })
                 .map(|(_, a)| *a)
                 .collect()
         });
@@ -717,22 +845,31 @@ impl eframe::App for TerminalApp {
         }
 
         // ----- tab bar -------------------------------------------------
-        if self.config.general.tab_bar == "always" || (self.config.general.tab_bar == "auto" && self.layout.tabs().len() > 1) {
+        if self.config.general.tab_bar == "always"
+            || (self.config.general.tab_bar == "auto" && self.layout.tabs().len() > 1)
+        {
             let surface = self.theme.surface;
             let border = self.theme.border;
             let accent = self.theme.accent;
             let tab_style = self.config.appearance.tab_style();
             egui::TopBottomPanel::top("tab_bar")
-                .frame(egui::Frame::none().fill(Color32::from_rgb(surface[0], surface[1], surface[2])).inner_margin(egui::Margin::symmetric(8.0, 6.0)))
+                .frame(
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(surface[0], surface[1], surface[2]))
+                        .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
+                )
                 .show(ctx, |ui| {
-                    ui.visuals_mut().selection.bg_fill = Color32::from_rgba_unmultiplied(accent[0], accent[1], accent[2], 60);
+                    ui.visuals_mut().selection.bg_fill =
+                        Color32::from_rgba_unmultiplied(accent[0], accent[1], accent[2], 60);
                     ui.horizontal(|ui| {
                         let active = self.layout.active_index();
                         let mut goto: Option<usize> = None;
                         let mut close: Option<PaneId> = None;
                         for (i, tab) in self.layout.tabs().iter().enumerate() {
                             let label = tab.title.clone().unwrap_or_else(|| {
-                                self.pane_title(tab.focused()).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("Tab {}", i + 1))
+                                self.pane_title(tab.focused())
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or_else(|| format!("Tab {}", i + 1))
                             });
                             let is_active = i == active;
                             let resp = ui.selectable_label(is_active, label);
@@ -745,7 +882,11 @@ impl eframe::App for TerminalApp {
                             }
                             ui.add_space(4.0);
                         }
-                        if ui.button("+").on_hover_text("New tab (Ctrl+Shift+T)").clicked() {
+                        if ui
+                            .button("+")
+                            .on_hover_text("New tab (Ctrl+Shift+T)")
+                            .clicked()
+                        {
                             self.new_pane_in_active_tab(ctx, None);
                         }
                         if let Some(g) = goto {
@@ -761,9 +902,16 @@ impl eframe::App for TerminalApp {
 
         // ----- settings gear + status ------------------------------------
         egui::Area::new(egui::Id::new("gear_area"))
-            .fixed_pos(Pos2::new(ctx.screen_rect().right() - 36.0, ctx.screen_rect().top() + 6.0))
+            .fixed_pos(Pos2::new(
+                ctx.screen_rect().right() - 36.0,
+                ctx.screen_rect().top() + 6.0,
+            ))
             .show(ctx, |ui| {
-                if ui.button("\u{2699}").on_hover_text("Settings (Ctrl+,)").clicked() {
+                if ui
+                    .button("\u{2699}")
+                    .on_hover_text("Settings (Ctrl+,)")
+                    .clicked()
+                {
                     self.show_settings = !self.show_settings;
                 }
             });
@@ -772,7 +920,12 @@ impl eframe::App for TerminalApp {
         let bg = self.theme.bg;
         let panel_alpha = (self.config.effective_opacity() * 255.0) as u8;
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], panel_alpha)))
+            .frame(egui::Frame::none().fill(Color32::from_rgba_unmultiplied(
+                bg[0],
+                bg[1],
+                bg[2],
+                panel_alpha,
+            )))
             .show(ctx, |ui| {
                 let area = ui.max_rect();
                 let cell = self.metrics;
@@ -796,16 +949,27 @@ impl eframe::App for TerminalApp {
 
                 for (pane_id, nr) in rects {
                     let px = ERect::from_min_max(
-                        Pos2::new(area.left() + nr.x0 * area.width(), area.top() + nr.y0 * area.height()),
-                        Pos2::new(area.left() + nr.x1 * area.width(), area.top() + nr.y1 * area.height()),
+                        Pos2::new(
+                            area.left() + nr.x0 * area.width(),
+                            area.top() + nr.y0 * area.height(),
+                        ),
+                        Pos2::new(
+                            area.left() + nr.x1 * area.width(),
+                            area.top() + nr.y1 * area.height(),
+                        ),
                     );
                     if px.width() < 1.0 || px.height() < 1.0 {
                         continue;
                     }
 
-                    let pad = padding.max(0.0).min(px.width() * 0.4).min(px.height() * 0.4);
-                    let cols = (((px.width() - 2.0 * pad) / cell.char_w).floor() as usize).max(MIN_COLS);
-                    let rows = (((px.height() - 2.0 * pad) / cell.row_h).floor() as usize).max(MIN_ROWS);
+                    let pad = padding
+                        .max(0.0)
+                        .min(px.width() * 0.4)
+                        .min(px.height() * 0.4);
+                    let cols =
+                        (((px.width() - 2.0 * pad) / cell.char_w).floor() as usize).max(MIN_COLS);
+                    let rows =
+                        (((px.height() - 2.0 * pad) / cell.row_h).floor() as usize).max(MIN_ROWS);
                     if let Some(pane) = self.panes.get(&pane_id) {
                         pane.session.resize(cols, rows, 0, 0);
                     }
@@ -815,7 +979,11 @@ impl eframe::App for TerminalApp {
                         any_animating = true;
                     }
 
-                    let resp = ui.interact(px, egui::Id::new(("pane", pane_id)), Sense::click_and_drag());
+                    let resp = ui.interact(
+                        px,
+                        egui::Id::new(("pane", pane_id)),
+                        Sense::click_and_drag(),
+                    );
                     if resp.clicked() || resp.drag_started() {
                         self.layout.focus(pane_id);
                         self.registry.set_active(pane_id);
@@ -823,16 +991,21 @@ impl eframe::App for TerminalApp {
                     }
                     let focused = self.layout.focused_pane() == pane_id;
 
-                    let hover_cell = hover_pos.filter(|_| px.contains(hover_pos.unwrap())).map(|p| {
-                        let c = ((p.x - px.left() - pad) / cell.char_w).floor().max(0.0) as usize;
-                        let r = ((p.y - px.top() - pad) / cell.row_h).floor().max(0.0) as usize;
-                        (c.min(cols.saturating_sub(1)), r.min(rows.saturating_sub(1)))
-                    });
+                    let hover_cell =
+                        hover_pos
+                            .filter(|_| px.contains(hover_pos.unwrap()))
+                            .map(|p| {
+                                let c = ((p.x - px.left() - pad) / cell.char_w).floor().max(0.0)
+                                    as usize;
+                                let r =
+                                    ((p.y - px.top() - pad) / cell.row_h).floor().max(0.0) as usize;
+                                (c.min(cols.saturating_sub(1)), r.min(rows.saturating_sub(1)))
+                            });
                     if let Some(pane) = self.panes.get_mut(&pane_id) {
                         pane.hover_cell = hover_cell;
                     }
 
-                    self.handle_pane_mouse(ctx, &resp, pane_id, px, cell, cols, rows);
+                    self.handle_pane_mouse(ctx, &resp, pane_id, px, cell, cols);
                     if focused {
                         self.handle_pane_keyboard(ctx, pane_id);
                     }
@@ -848,7 +1021,12 @@ impl eframe::App for TerminalApp {
                                 cursor_visible_phase: pane.blink_on,
                                 unfocused_hollow,
                                 cursor_thickness: thickness,
-                                show_search: if self.search_active && !self.search_query.is_empty() { Some(self.search_query.as_str()) } else { None },
+                                show_search: if self.search_active && !self.search_query.is_empty()
+                                {
+                                    Some(self.search_query.as_str())
+                                } else {
+                                    None
+                                },
                                 reduced_motion: reduced,
                                 effects: &effects,
                                 accent,
@@ -866,15 +1044,23 @@ impl eframe::App for TerminalApp {
                                 status_style: self.config.appearance.status_style(),
                                 user_host: &self.user_host,
                             };
-                            if render::paint_pane(ui, px, &mut term, &opts, pane.rain.as_mut(), dt) {
+                            if render::paint_pane(ui, px, &mut term, &opts, pane.rain.as_mut(), dt)
+                            {
                                 any_animating = true;
                             }
-                        }
+                        };
                     }
 
                     if rects_len(&self.layout, pane_id) > 1 {
                         let b = theme_colors.border;
-                        ui.painter().rect_stroke(px, corner_radius, egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(b[0], b[1], b[2], 90)));
+                        ui.painter().rect_stroke(
+                            px,
+                            corner_radius,
+                            egui::Stroke::new(
+                                1.0_f32,
+                                Color32::from_rgba_unmultiplied(b[0], b[1], b[2], 90),
+                            ),
+                        );
                     }
                 }
 
@@ -904,14 +1090,26 @@ impl eframe::App for TerminalApp {
 }
 
 fn rects_len(layout: &Layout, pane: PaneId) -> usize {
-    layout.tabs().iter().find(|t| t.panes().contains(&pane)).map(|t| t.panes().len()).unwrap_or(1)
+    layout
+        .tabs()
+        .iter()
+        .find(|t| t.panes().contains(&pane))
+        .map(|t| t.panes().len())
+        .unwrap_or(1)
 }
 
 /// Extra per-`TabStyle` decoration drawn around a tab's `selectable_label`
 /// response — `Underline` gets an accent bar under the active tab, `Boxed`
 /// gets a full border on every tab, `Rounded` relies on the accent-tinted
 /// selection fill already applied to the whole tab bar and needs nothing extra.
-fn paint_tab_decoration(ui: &egui::Ui, resp: &egui::Response, style: TabStyle, active: bool, accent: Rgb, border: Rgb) {
+fn paint_tab_decoration(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    style: TabStyle,
+    active: bool,
+    accent: Rgb,
+    border: Rgb,
+) {
     match style {
         TabStyle::Rounded => {}
         TabStyle::Underline => {
@@ -920,24 +1118,45 @@ fn paint_tab_decoration(ui: &egui::Ui, resp: &egui::Response, style: TabStyle, a
                 let y = r.bottom() + 2.0;
                 ui.painter().line_segment(
                     [egui::Pos2::new(r.left(), y), egui::Pos2::new(r.right(), y)],
-                    egui::Stroke::new(2.0, Color32::from_rgb(accent[0], accent[1], accent[2])),
+                    egui::Stroke::new(2.0_f32, Color32::from_rgb(accent[0], accent[1], accent[2])),
                 );
             }
         }
         TabStyle::Boxed => {
             let a = if active { 160 } else { 70 };
-            ui.painter().rect_stroke(resp.rect.expand(3.0), 2.0, egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(border[0], border[1], border[2], a)));
+            ui.painter().rect_stroke(
+                resp.rect.expand(3.0),
+                2.0,
+                egui::Stroke::new(
+                    1.0_f32,
+                    Color32::from_rgba_unmultiplied(border[0], border[1], border[2], a),
+                ),
+            );
         }
     }
 }
 
 impl TerminalApp {
-    fn handle_pane_mouse(&mut self, ctx: &egui::Context, resp: &egui::Response, pane_id: PaneId, px: ERect, cell: Metrics, cols: usize, _rows: usize) {
+    fn handle_pane_mouse(
+        &mut self,
+        ctx: &egui::Context,
+        resp: &egui::Response,
+        pane_id: PaneId,
+        px: ERect,
+        cell: Metrics,
+        cols: usize,
+    ) {
         // Same padding math as the paint loop in `update()` — the text grid
         // is inset from the pane's own rect by `[window] padding`, so mouse
         // coordinates need the same offset subtracted before they line up
         // with a column/row.
-        let pad = self.config.window.padding.max(0.0).min(px.width() * 0.4).min(px.height() * 0.4);
+        let pad = self
+            .config
+            .window
+            .padding
+            .max(0.0)
+            .min(px.width() * 0.4)
+            .min(px.height() * 0.4);
         let cell_of = |p: Pos2| -> (usize, usize) {
             let c = ((p.x - px.left() - pad) / cell.char_w).floor().max(0.0) as usize;
             let r = ((p.y - px.top() - pad) / cell.row_h).floor().max(0.0) as usize;
@@ -965,7 +1184,11 @@ impl TerminalApp {
         } else if resp.drag_started() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let (c, r) = cell_of(pos);
-                let mode = if ctx.input(|i| i.modifiers.alt) { crate::term::SelMode::Block } else { SelMode::Simple };
+                let mode = if ctx.input(|i| i.modifiers.alt) {
+                    crate::term::SelMode::Block
+                } else {
+                    SelMode::Simple
+                };
                 self.with_pane_term(pane_id, |t| {
                     let p = t.view_point(r, c);
                     t.sel_begin(mode, p);
@@ -1036,12 +1259,18 @@ impl TerminalApp {
         if resp.hovered() {
             let scroll = ctx.input(|i| i.raw_scroll_delta.y);
             if scroll.abs() > 0.01 {
-                let in_alt = self.with_pane_term_ret(pane_id, |t| t.in_alt_screen()).unwrap_or(false);
-                let lines = ((scroll / cell.row_h.max(1.0)) * self.config.scrollback.wheel_lines).round() as isize;
+                let in_alt = self
+                    .with_pane_term_ret(pane_id, |t| t.in_alt_screen())
+                    .unwrap_or(false);
+                let lines = ((scroll / cell.row_h.max(1.0)) * self.config.scrollback.wheel_lines)
+                    .round() as isize;
                 if in_alt && self.config.scrollback.wheel_lines > 0.0 {
-                    let app_cursor = self.with_pane_term_ret(pane_id, |t| t.modes.app_cursor).unwrap_or(false);
+                    let app_cursor = self
+                        .with_pane_term_ret(pane_id, |t| t.modes.app_cursor)
+                        .unwrap_or(false);
                     if lines != 0 {
-                        let bytes = input::wheel_as_arrows(lines > 0, lines.unsigned_abs(), app_cursor);
+                        let bytes =
+                            input::wheel_as_arrows(lines > 0, lines.unsigned_abs(), app_cursor);
                         if let Some(p) = self.panes.get(&pane_id) {
                             p.session.write(bytes);
                         }
@@ -1056,10 +1285,14 @@ impl TerminalApp {
     }
 
     fn handle_pane_keyboard(&mut self, ctx: &egui::Context, pane_id: PaneId) {
-        let app_cursor = self.with_pane_term_ret(pane_id, |t| t.modes.app_cursor).unwrap_or(false);
+        let app_cursor = self
+            .with_pane_term_ret(pane_id, |t| t.modes.app_cursor)
+            .unwrap_or(false);
         let ctrl_v_pastes = self.config.paste.ctrl_v_pastes;
         let ctrl_c_copies = self.config.selection.ctrl_c_copies;
-        let has_selection = self.with_pane_term_ret(pane_id, |t| t.has_selection()).unwrap_or(false);
+        let has_selection = self
+            .with_pane_term_ret(pane_id, |t| t.has_selection())
+            .unwrap_or(false);
 
         let mut outgoing: Vec<u8> = Vec::new();
         let mut do_copy = false;
@@ -1072,9 +1305,17 @@ impl TerminalApp {
                         if text.chars().any(|c| c.is_control()) {
                             continue;
                         }
-                        outgoing.extend(input::encode_text(text, i.modifiers.alt && !i.modifiers.ctrl));
+                        outgoing.extend(input::encode_text(
+                            text,
+                            i.modifiers.alt && !i.modifiers.ctrl,
+                        ));
                     }
-                    egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => {
                         let mods = Mods::from_egui(modifiers);
                         if *key == egui::Key::C && mods.ctrl && mods.shift {
                             do_copy = true;
@@ -1123,11 +1364,14 @@ impl TerminalApp {
     }
 
     fn with_pane_term_ret<R>(&self, pane_id: PaneId, f: impl FnOnce(&mut Term) -> R) -> Option<R> {
-        self.panes.get(&pane_id).and_then(|p| p.session.term().lock().ok().map(|mut t| f(&mut t)))
+        self.panes
+            .get(&pane_id)
+            .and_then(|p| p.session.term().lock().ok().map(|mut t| f(&mut t)))
     }
 
     fn pane_selection_text(&self, pane_id: PaneId) -> Option<String> {
-        self.with_pane_term_ret(pane_id, |t| t.selection_text()).flatten()
+        self.with_pane_term_ret(pane_id, |t| t.selection_text())
+            .flatten()
     }
 
     fn pane_title(&self, pane_id: PaneId) -> Option<String> {
@@ -1377,22 +1621,33 @@ impl TerminalApp {
         }
         let mut open = true;
         let mut chosen: Option<Action> = None;
-        egui::Window::new("Command Palette").collapsible(false).resizable(false).open(&mut open).anchor(egui::Align2::CENTER_TOP, [0.0, 60.0]).show(ctx, |ui| {
-            let resp = ui.text_edit_singleline(&mut self.palette_query);
-            resp.request_focus();
-            let q = self.palette_query.to_ascii_lowercase();
-            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                for (action, _name, label) in config::ACTIONS {
-                    if !q.is_empty() && !label.to_ascii_lowercase().contains(&q) {
-                        continue;
-                    }
-                    let shortcut = config::shortcut_for(&self.keymap, *action).unwrap_or_default();
-                    if ui.selectable_label(false, format!("{label}    {shortcut}")).clicked() {
-                        chosen = Some(*action);
-                    }
-                }
+        egui::Window::new("Command Palette")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
+            .show(ctx, |ui| {
+                let resp = ui.text_edit_singleline(&mut self.palette_query);
+                resp.request_focus();
+                let q = self.palette_query.to_ascii_lowercase();
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (action, _name, label) in config::ACTIONS {
+                            if !q.is_empty() && !label.to_ascii_lowercase().contains(&q) {
+                                continue;
+                            }
+                            let shortcut =
+                                config::shortcut_for(&self.keymap, *action).unwrap_or_default();
+                            if ui
+                                .selectable_label(false, format!("{label}    {shortcut}"))
+                                .clicked()
+                            {
+                                chosen = Some(*action);
+                            }
+                        }
+                    });
             });
-        });
         self.show_palette = open;
         if let Some(a) = chosen {
             self.show_palette = false;
@@ -1401,22 +1656,29 @@ impl TerminalApp {
     }
 
     fn show_paste_confirm(&mut self, ctx: &egui::Context) {
-        let Some(pending) = &self.pending_paste else { return };
+        let Some(pending) = &self.pending_paste else {
+            return;
+        };
         let mut go = false;
         let mut cancel = false;
-        egui::Window::new("Confirm paste").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label(format!("This paste needs confirmation: {}", pending.reason));
-            let preview = security::paste_preview(&String::from_utf8_lossy(&pending.paste.bytes), 6, 80);
-            ui.add(egui::Label::new(egui::RichText::new(preview).monospace()).wrap());
-            ui.horizontal(|ui| {
-                if ui.button("Paste anyway").clicked() {
-                    go = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
+        egui::Window::new("Confirm paste")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("This paste needs confirmation: {}", pending.reason));
+                let preview =
+                    security::paste_preview(&String::from_utf8_lossy(&pending.paste.bytes), 6, 80);
+                ui.add(egui::Label::new(egui::RichText::new(preview).monospace()).wrap());
+                ui.horizontal(|ui| {
+                    if ui.button("Paste anyway").clicked() {
+                        go = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
             });
-        });
         if go {
             if let Some(pending) = self.pending_paste.take() {
                 if let Some(p) = self.panes.get(&pending.pane) {
@@ -1429,21 +1691,27 @@ impl TerminalApp {
     }
 
     fn show_link_confirm(&mut self, ctx: &egui::Context) {
-        let Some(pending) = &self.pending_link else { return };
+        let Some(pending) = &self.pending_link else {
+            return;
+        };
         let mut go = false;
         let mut cancel = false;
-        egui::Window::new("Open link?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label(&pending.url);
-            ui.label(&pending.reason);
-            ui.horizontal(|ui| {
-                if ui.button("Open").clicked() {
-                    go = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
+        egui::Window::new("Open link?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(&pending.url);
+                ui.label(&pending.reason);
+                ui.horizontal(|ui| {
+                    if ui.button("Open").clicked() {
+                        go = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
             });
-        });
         if go {
             if let Some(pending) = self.pending_link.take() {
                 crate::platform::open_external(&pending.url);
@@ -1454,21 +1722,31 @@ impl TerminalApp {
     }
 
     fn show_close_confirm(&mut self, ctx: &egui::Context) {
-        let Some(pane_id) = self.pending_close else { return };
-        let name = self.panes.get(&pane_id).and_then(|p| p.session.foreground_name()).unwrap_or_else(|| "a running program".to_string());
+        let Some(pane_id) = self.pending_close else {
+            return;
+        };
+        let name = self
+            .panes
+            .get(&pane_id)
+            .and_then(|p| p.session.foreground_name())
+            .unwrap_or_else(|| "a running program".to_string());
         let mut go = false;
         let mut cancel = false;
-        egui::Window::new("Close pane?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label(format!("{name} is still running. Close this pane anyway?"));
-            ui.horizontal(|ui| {
-                if ui.button("Close").clicked() {
-                    go = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
+        egui::Window::new("Close pane?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("{name} is still running. Close this pane anyway?"));
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        go = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
             });
-        });
         if go {
             self.pending_close = None;
             self.close_pane(pane_id);

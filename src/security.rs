@@ -49,7 +49,10 @@ impl Default for LinkPolicy {
     fn default() -> Self {
         LinkPolicy {
             mode: LinkMode::CtrlClick,
-            allowed_schemes: ["http", "https", "mailto", "file", "ftp", "ssh"].iter().map(|s| s.to_string()).collect(),
+            allowed_schemes: ["http", "https", "mailto", "file", "ftp", "ssh"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             confirm_mismatch: true,
             confirm_all: false,
         }
@@ -72,7 +75,11 @@ pub const MAX_URI_LEN: usize = 2048;
 pub fn scheme_of(uri: &str) -> Option<String> {
     let idx = uri.find(':')?;
     let s = &uri[..idx];
-    if s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.') {
+    if s.is_empty()
+        || !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
         return None;
     }
     Some(s.to_ascii_lowercase())
@@ -82,14 +89,20 @@ pub fn scheme_of(uri: &str) -> Option<String> {
 /// userinfo was present (`http://google.com@evil.example` is a classic spoof).
 pub fn host_of(uri: &str) -> Option<(String, bool)> {
     let rest = &uri[uri.find("://")? + 3..];
-    let end = rest.find(|c: char| c == '/' || c == '?' || c == '#').unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| c == '/' || c == '?' || c == '#')
+        .unwrap_or(rest.len());
     let authority = &rest[..end];
     let (userinfo, hostport) = match authority.rfind('@') {
         Some(i) => (true, &authority[i + 1..]),
         None => (false, authority),
     };
     let host = if hostport.starts_with('[') {
-        hostport.split(']').next().unwrap_or(hostport).trim_start_matches('[')
+        hostport
+            .split(']')
+            .next()
+            .unwrap_or(hostport)
+            .trim_start_matches('[')
     } else {
         hostport.split(':').next().unwrap_or(hostport)
     };
@@ -103,7 +116,9 @@ pub fn host_of(uri: &str) -> Option<(String, bool)> {
 /// (for OSC 8 links; `None` for plain-text URLs, which cannot lie).
 pub fn evaluate_link(uri: &str, visible_text: Option<&str>, policy: &LinkPolicy) -> LinkDecision {
     if policy.mode == LinkMode::Off {
-        return LinkDecision::Deny("links are disabled in terminal.toml ([links] mode = \"off\")".into());
+        return LinkDecision::Deny(
+            "links are disabled in terminal.toml ([links] mode = \"off\")".into(),
+        );
     }
     if uri.len() > MAX_URI_LEN {
         return LinkDecision::Deny("link is too long".into());
@@ -118,7 +133,11 @@ pub fn evaluate_link(uri: &str, visible_text: Option<&str>, policy: &LinkPolicy)
     if ALWAYS_DENIED.contains(&scheme.as_str()) {
         return LinkDecision::Deny(format!("`{scheme}:` links are never opened"));
     }
-    if !policy.allowed_schemes.iter().any(|s| s.eq_ignore_ascii_case(&scheme)) {
+    if !policy
+        .allowed_schemes
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(&scheme))
+    {
         return LinkDecision::Deny(format!("`{scheme}:` is not in the allowed link schemes"));
     }
 
@@ -129,7 +148,9 @@ pub fn evaluate_link(uri: &str, visible_text: Option<&str>, policy: &LinkPolicy)
     match scheme.as_str() {
         "file" => {
             match host_of(uri) {
-                Some((h, _)) if h != "localhost" => reasons.push("file link points at a remote host".into()),
+                Some((h, _)) if h != "localhost" => {
+                    reasons.push("file link points at a remote host".into())
+                }
                 _ => {}
             }
             reasons.push("this opens a local file".into());
@@ -138,16 +159,21 @@ pub fn evaluate_link(uri: &str, visible_text: Option<&str>, policy: &LinkPolicy)
         "http" | "https" | "ftp" => {
             if let Some((host, userinfo)) = host_of(uri) {
                 if userinfo {
-                    reasons.push("the address contains a user@ part, a common phishing trick".into());
+                    reasons
+                        .push("the address contains a user@ part, a common phishing trick".into());
                 }
                 if host.contains("xn--") {
-                    reasons.push("the host is an internationalised domain (possible look-alike)".into());
+                    reasons.push(
+                        "the host is an internationalised domain (possible look-alike)".into(),
+                    );
                 }
                 if policy.confirm_mismatch {
                     if let Some(vis) = visible_text {
                         if let Some(vis_host) = visible_host(vis) {
                             if vis_host != host {
-                                reasons.push(format!("the link text says `{vis_host}` but it opens `{host}`"));
+                                reasons.push(format!(
+                                    "the link text says `{vis_host}` but it opens `{host}`"
+                                ));
                             }
                         }
                     }
@@ -173,8 +199,14 @@ fn visible_host(text: &str) -> Option<String> {
     let first = t.split(|c: char| c == '/' || c == '?' || c == '#').next()?;
     let looks_like_domain = first.contains('.')
         && !first.contains(' ')
-        && first.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        && first.rsplit('.').next().map(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())).unwrap_or(false);
+        && first
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && first
+            .rsplit('.')
+            .next()
+            .map(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
+            .unwrap_or(false);
     if looks_like_domain {
         Some(first.to_ascii_lowercase())
     } else {
@@ -200,7 +232,12 @@ pub struct PasteConfig {
 
 impl Default for PasteConfig {
     fn default() -> Self {
-        PasteConfig { confirm_multiline: true, confirm_bytes: 64 * 1024, max_bytes: 4 * 1024 * 1024, strip_controls: true }
+        PasteConfig {
+            confirm_multiline: true,
+            confirm_bytes: 64 * 1024,
+            max_bytes: 4 * 1024 * 1024,
+            strip_controls: true,
+        }
     }
 }
 
@@ -225,7 +262,12 @@ pub struct Paste {
 /// * with bracketed paste, the text is wrapped in `ESC[200~ … ESC[201~`.
 pub fn prepare_paste(text: &str, bracketed: bool, cfg: &PasteConfig) -> Paste {
     if text.len() > cfg.max_bytes {
-        return Paste { bytes: Vec::new(), needs_confirm: None, stripped: false, refused: true };
+        return Paste {
+            bytes: Vec::new(),
+            needs_confirm: None,
+            stripped: false,
+            refused: true,
+        };
     }
     let mut clean = String::with_capacity(text.len());
     let mut stripped = false;
@@ -255,7 +297,11 @@ pub fn prepare_paste(text: &str, bracketed: bool, cfg: &PasteConfig) -> Paste {
         reasons.push("control characters were removed from it".to_string());
     }
 
-    let payload = if bracketed { clean } else { clean.replace('\n', "\r") };
+    let payload = if bracketed {
+        clean
+    } else {
+        clean.replace('\n', "\r")
+    };
     let mut bytes = Vec::with_capacity(payload.len() + 12);
     if bracketed {
         bytes.extend_from_slice(b"\x1b[200~");
@@ -266,7 +312,11 @@ pub fn prepare_paste(text: &str, bracketed: bool, cfg: &PasteConfig) -> Paste {
     }
     Paste {
         bytes,
-        needs_confirm: if reasons.is_empty() { None } else { Some(reasons.join("; ")) },
+        needs_confirm: if reasons.is_empty() {
+            None
+        } else {
+            Some(reasons.join("; "))
+        },
         stripped,
         refused: false,
     }
@@ -276,7 +326,12 @@ pub fn prepare_paste(text: &str, bracketed: bool, cfg: &PasteConfig) -> Paste {
 pub fn paste_preview(text: &str, max_lines: usize, max_cols: usize) -> String {
     let mut out = String::new();
     let mut total = 0usize;
-    for (i, line) in text.replace("\r\n", "\n").replace('\r', "\n").split('\n').enumerate() {
+    for (i, line) in text
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split('\n')
+        .enumerate()
+    {
         total = i + 1;
         if i >= max_lines {
             continue;
@@ -325,7 +380,9 @@ pub fn sanitize_command(cmd: &str) -> Option<String> {
 
 /// Commands starting with one of the configured prefixes run without a confirmation prompt.
 pub fn is_trusted_command(cmd: &str, prefixes: &[String]) -> bool {
-    prefixes.iter().any(|p| !p.is_empty() && cmd.starts_with(p.as_str()))
+    prefixes
+        .iter()
+        .any(|p| !p.is_empty() && cmd.starts_with(p.as_str()))
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +398,7 @@ pub fn file_uri(path: &Path) -> String {
         if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~' | b'/') {
             out.push(c as char);
         } else {
-            out.push_str(&format!("%{:02X}", c));
+            out.push_str(&format!("%{c:02X}"));
         }
     }
     out
@@ -357,7 +414,10 @@ mod tests {
 
     #[test]
     fn plain_https_link_opens() {
-        assert_eq!(evaluate_link("https://example.com/a?b=c", None, &pol()), LinkDecision::Open);
+        assert_eq!(
+            evaluate_link("https://example.com/a?b=c", None, &pol()),
+            LinkDecision::Open
+        );
     }
 
     #[test]
@@ -365,51 +425,103 @@ mod tests {
         let mut p = pol();
         p.allowed_schemes.push("javascript".into());
         p.allowed_schemes.push("data".into());
-        assert!(matches!(evaluate_link("javascript:alert(1)", None, &p), LinkDecision::Deny(_)));
-        assert!(matches!(evaluate_link("data:text/html,hi", None, &p), LinkDecision::Deny(_)));
-        assert!(matches!(evaluate_link("gopher://x", None, &pol()), LinkDecision::Deny(_)));
+        assert!(matches!(
+            evaluate_link("javascript:alert(1)", None, &p),
+            LinkDecision::Deny(_)
+        ));
+        assert!(matches!(
+            evaluate_link("data:text/html,hi", None, &p),
+            LinkDecision::Deny(_)
+        ));
+        assert!(matches!(
+            evaluate_link("gopher://x", None, &pol()),
+            LinkDecision::Deny(_)
+        ));
     }
 
     #[test]
     fn disabled_mode_denies_everything() {
         let mut p = pol();
         p.mode = LinkMode::Off;
-        assert!(matches!(evaluate_link("https://example.com", None, &p), LinkDecision::Deny(_)));
+        assert!(matches!(
+            evaluate_link("https://example.com", None, &p),
+            LinkDecision::Deny(_)
+        ));
     }
 
     #[test]
     fn spoofed_link_text_needs_confirmation() {
-        let d = evaluate_link("https://evil.example/login", Some("https://bank.example"), &pol());
-        assert!(matches!(d, LinkDecision::Confirm(ref r) if r.contains("bank.example")), "{d:?}");
-        assert_eq!(evaluate_link("https://bank.example/x", Some("bank.example"), &pol()), LinkDecision::Open);
+        let d = evaluate_link(
+            "https://evil.example/login",
+            Some("https://bank.example"),
+            &pol(),
+        );
+        assert!(
+            matches!(d, LinkDecision::Confirm(ref r) if r.contains("bank.example")),
+            "{d:?}"
+        );
+        assert_eq!(
+            evaluate_link("https://bank.example/x", Some("bank.example"), &pol()),
+            LinkDecision::Open
+        );
         // arbitrary prose is not treated as a URL
-        assert_eq!(evaluate_link("https://bank.example", Some("click here"), &pol()), LinkDecision::Open);
+        assert_eq!(
+            evaluate_link("https://bank.example", Some("click here"), &pol()),
+            LinkDecision::Open
+        );
     }
 
     #[test]
     fn userinfo_and_idn_are_flagged() {
-        assert!(matches!(evaluate_link("http://google.com@evil.example/", None, &pol()), LinkDecision::Confirm(_)));
-        assert!(matches!(evaluate_link("https://xn--pple-43d.com/", None, &pol()), LinkDecision::Confirm(_)));
+        assert!(matches!(
+            evaluate_link("http://google.com@evil.example/", None, &pol()),
+            LinkDecision::Confirm(_)
+        ));
+        assert!(matches!(
+            evaluate_link("https://xn--pple-43d.com/", None, &pol()),
+            LinkDecision::Confirm(_)
+        ));
     }
 
     #[test]
     fn file_and_ssh_links_confirm() {
-        assert!(matches!(evaluate_link("file:///etc/passwd", None, &pol()), LinkDecision::Confirm(_)));
-        assert!(matches!(evaluate_link("ssh://host", None, &pol()), LinkDecision::Confirm(_)));
+        assert!(matches!(
+            evaluate_link("file:///etc/passwd", None, &pol()),
+            LinkDecision::Confirm(_)
+        ));
+        assert!(matches!(
+            evaluate_link("ssh://host", None, &pol()),
+            LinkDecision::Confirm(_)
+        ));
     }
 
     #[test]
     fn control_characters_and_length_are_refused() {
-        assert!(matches!(evaluate_link("https://a.b/\u{1b}[31m", None, &pol()), LinkDecision::Deny(_)));
-        assert!(matches!(evaluate_link("https://a.b/ x", None, &pol()), LinkDecision::Deny(_)));
+        assert!(matches!(
+            evaluate_link("https://a.b/\u{1b}[31m", None, &pol()),
+            LinkDecision::Deny(_)
+        ));
+        assert!(matches!(
+            evaluate_link("https://a.b/ x", None, &pol()),
+            LinkDecision::Deny(_)
+        ));
         let long = format!("https://a.b/{}", "x".repeat(3000));
-        assert!(matches!(evaluate_link(&long, None, &pol()), LinkDecision::Deny(_)));
+        assert!(matches!(
+            evaluate_link(&long, None, &pol()),
+            LinkDecision::Deny(_)
+        ));
     }
 
     #[test]
     fn host_parsing() {
-        assert_eq!(host_of("https://User@Example.COM:8080/x"), Some(("example.com".to_string(), true)));
-        assert_eq!(host_of("http://[::1]:80/"), Some(("::1".to_string(), false)));
+        assert_eq!(
+            host_of("https://User@Example.COM:8080/x"),
+            Some(("example.com".to_string(), true))
+        );
+        assert_eq!(
+            host_of("http://[::1]:80/"),
+            Some(("::1".to_string(), false))
+        );
         assert_eq!(host_of("mailto:a@b"), None);
     }
 
@@ -445,9 +557,15 @@ mod tests {
 
     #[test]
     fn size_limits() {
-        let cfg = PasteConfig { max_bytes: 10, ..PasteConfig::default() };
+        let cfg = PasteConfig {
+            max_bytes: 10,
+            ..PasteConfig::default()
+        };
         assert!(prepare_paste(&"x".repeat(11), false, &cfg).refused);
-        let cfg = PasteConfig { confirm_bytes: 4, ..PasteConfig::default() };
+        let cfg = PasteConfig {
+            confirm_bytes: 4,
+            ..PasteConfig::default()
+        };
         assert!(prepare_paste("hello", false, &cfg).needs_confirm.is_some());
     }
 
@@ -460,7 +578,10 @@ mod tests {
 
     #[test]
     fn command_sanitising() {
-        assert_eq!(sanitize_command("  mitos-pkg install foo "), Some("mitos-pkg install foo".to_string()));
+        assert_eq!(
+            sanitize_command("  mitos-pkg install foo "),
+            Some("mitos-pkg install foo".to_string())
+        );
         assert_eq!(sanitize_command("ls\nrm -rf ~"), None);
         assert_eq!(sanitize_command("ls\x1b[31m"), None);
         assert_eq!(sanitize_command(""), None);
@@ -472,6 +593,9 @@ mod tests {
 
     #[test]
     fn file_uri_encoding() {
-        assert_eq!(file_uri(Path::new("/home/a b/ü.txt")), "file:///home/a%20b/%C3%BC.txt");
+        assert_eq!(
+            file_uri(Path::new("/home/a b/ü.txt")),
+            "file:///home/a%20b/%C3%BC.txt"
+        );
     }
 }

@@ -30,7 +30,11 @@ pub enum ShellKind {
 
 impl ShellKind {
     pub fn of(path: &str) -> ShellKind {
-        let base = Path::new(path).file_name().and_then(|s| s.to_str()).unwrap_or("").trim_start_matches('-');
+        let base = Path::new(path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .trim_start_matches('-');
         match base {
             "mitos-shell" => ShellKind::MitosShell,
             "bash" => ShellKind::Bash,
@@ -100,7 +104,9 @@ pub fn which(name: &str) -> Option<PathBuf> {
         let p = PathBuf::from(name);
         return if is_executable(&p) { Some(p) } else { None };
     }
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
     for extra in ["/usr/local/bin", "/usr/bin", "/bin"] {
         dirs.push(PathBuf::from(extra));
     }
@@ -157,7 +163,10 @@ const ZSH_INTEGRATION: &str = include_str!("../shell-integration/mitos.zsh");
 const FISH_INTEGRATION: &str = include_str!("../shell-integration/mitos.fish");
 
 fn write_if_changed(path: &Path, content: &str) {
-    if std::fs::read_to_string(path).map(|c| c == content).unwrap_or(false) {
+    if std::fs::read_to_string(path)
+        .map(|c| c == content)
+        .unwrap_or(false)
+    {
         return;
     }
     let _ = std::fs::write(path, content);
@@ -166,7 +175,10 @@ fn write_if_changed(path: &Path, content: &str) {
 /// Write the embedded integration scripts to a private per-user directory and
 /// return it. Sourcing `mitos.bash|zsh|fish` from there enables OSC 7 / OSC 133.
 pub fn ensure_integration_files() -> Option<PathBuf> {
-    let dir = dirs::cache_dir()?.join("mitos").join("terminal").join("shell-integration");
+    let dir = dirs::cache_dir()?
+        .join("mitos")
+        .join("terminal")
+        .join("shell-integration");
     std::fs::create_dir_all(&dir).ok()?;
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     write_if_changed(&dir.join("mitos.bash"), BASH_INTEGRATION);
@@ -221,7 +233,11 @@ pub fn spawn(opts: &SpawnOptions) -> Result<SpawnedPty> {
         .map_err(|e| anyhow!("openpty failed: {e}"))?;
 
     let mut cmd = CommandBuilder::new(&shell);
-    let integration = if opts.shell_integration { ensure_integration_files() } else { None };
+    let integration = if opts.shell_integration {
+        ensure_integration_files()
+    } else {
+        None
+    };
     if opts.args.is_empty() {
         if let (ShellKind::Bash, Some(dir)) = (kind, integration.as_ref()) {
             cmd.arg("--rcfile");
@@ -258,18 +274,44 @@ pub fn spawn(opts: &SpawnOptions) -> Result<SpawnedPty> {
     // Critical: without this the master never reports EOF when the child exits.
     drop(pair.slave);
 
-    let reader = pair.master.try_clone_reader().map_err(|e| anyhow!("cannot read from pty: {e}"))?;
-    let writer = pair.master.take_writer().map_err(|e| anyhow!("cannot write to pty: {e}"))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| anyhow!("cannot read from pty: {e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| anyhow!("cannot write to pty: {e}"))?;
     let killer = child.clone_killer();
     let pid = child.process_id();
 
-    Ok(SpawnedPty { master: pair.master, reader, writer, child, killer, pid, shell, kind })
+    Ok(SpawnedPty {
+        master: pair.master,
+        reader,
+        writer,
+        child,
+        killer,
+        pid,
+        shell,
+        kind,
+    })
 }
 
 /// Tell the kernel (and, through SIGWINCH, the foreground program) the new size.
-pub fn resize(master: &dyn MasterPty, cols: u16, rows: u16, pixel_width: u16, pixel_height: u16) -> Result<()> {
+pub fn resize(
+    master: &dyn MasterPty,
+    cols: u16,
+    rows: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+) -> Result<()> {
     master
-        .resize(PtySize { rows: rows.max(1), cols: cols.max(1), pixel_width, pixel_height })
+        .resize(PtySize {
+            rows: rows.max(1),
+            cols: cols.max(1),
+            pixel_width,
+            pixel_height,
+        })
         .map_err(|e| anyhow!("resize failed: {e}"))
         .context("pty resize")
 }
@@ -377,7 +419,11 @@ impl ExitInfo {
     /// Human-readable, e.g. `exited with code 3` or `terminated by signal 9`.
     pub fn describe(&self) -> String {
         if self.code > 128 && self.code < 160 {
-            format!("terminated by signal {} (exit code {})", self.code - 128, self.code)
+            format!(
+                "terminated by signal {} (exit code {})",
+                self.code - 128,
+                self.code
+            )
         } else if self.code == 0 {
             "exited normally".to_string()
         } else {
@@ -413,7 +459,10 @@ mod tests {
             }
         }
         let status = p.child.wait().expect("wait");
-        (String::from_utf8_lossy(&out).into_owned(), status.exit_code() as i32)
+        (
+            String::from_utf8_lossy(&out).into_owned(),
+            status.exit_code() as i32,
+        )
     }
 
     #[test]
@@ -427,7 +476,10 @@ mod tests {
     fn shell_kind_detection() {
         assert_eq!(ShellKind::of("/usr/bin/bash"), ShellKind::Bash);
         assert_eq!(ShellKind::of("-zsh"), ShellKind::Zsh);
-        assert_eq!(ShellKind::of("/opt/mitos/bin/mitos-shell"), ShellKind::MitosShell);
+        assert_eq!(
+            ShellKind::of("/opt/mitos/bin/mitos-shell"),
+            ShellKind::MitosShell
+        );
         assert_eq!(ShellKind::of("/bin/dash"), ShellKind::Other);
     }
 
@@ -447,7 +499,10 @@ mod tests {
     #[test]
     fn environment_advertises_the_terminal() {
         let (out, _) = run("echo $TERM $COLORTERM $TERM_PROGRAM");
-        assert!(out.contains("xterm-256color truecolor mitos-terminal"), "{out:?}");
+        assert!(
+            out.contains("xterm-256color truecolor mitos-terminal"),
+            "{out:?}"
+        );
     }
 
     #[test]
@@ -483,20 +538,32 @@ mod tests {
         p.writer.flush().ok();
         let start = Instant::now();
         let status = p.child.wait().expect("wait");
-        assert!(start.elapsed() < Duration::from_secs(10), "child did not die on ^C");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "child did not die on ^C"
+        );
         assert_ne!(status.exit_code(), 0);
     }
 
     #[test]
     fn closing_the_master_hangs_up_the_child() {
         let p = spawn(&opts("sleep 30")).expect("spawn");
-        let SpawnedPty { master, reader, writer, mut child, .. } = p;
+        let SpawnedPty {
+            master,
+            reader,
+            writer,
+            mut child,
+            ..
+        } = p;
         drop(writer);
         drop(reader);
         drop(master);
         let start = Instant::now();
         let _ = child.wait();
-        assert!(start.elapsed() < Duration::from_secs(10), "SIGHUP did not reach the child");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "SIGHUP did not reach the child"
+        );
     }
 
     #[test]

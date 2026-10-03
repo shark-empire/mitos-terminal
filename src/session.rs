@@ -64,7 +64,12 @@ pub struct Session {
 
 impl Session {
     /// Spawn a shell and start the I/O threads. Never blocks on the child.
-    pub fn spawn(opts: SpawnOptions, scrollback_limit: usize, policy: Policy, ctx: egui::Context) -> Session {
+    pub fn spawn(
+        opts: SpawnOptions,
+        scrollback_limit: usize,
+        policy: Policy,
+        ctx: egui::Context,
+    ) -> Session {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let mut term = Term::new(opts.cols as usize, opts.rows as usize, scrollback_limit);
         term.set_policy(policy);
@@ -72,7 +77,16 @@ impl Session {
 
         match pty::spawn(&opts) {
             Ok(p) => {
-                let SpawnedPty { master, reader, mut writer, mut child, pid, shell, kind, .. } = p;
+                let SpawnedPty {
+                    master,
+                    reader,
+                    mut writer,
+                    mut child,
+                    pid,
+                    shell,
+                    kind,
+                    ..
+                } = p;
                 let state = Arc::new(Mutex::new(SessionState::Running));
                 let reader_done = Arc::new(AtomicBool::new(false));
 
@@ -97,7 +111,9 @@ impl Session {
                         .name(format!("mitos-term-r{id}"))
                         .spawn(move || {
                             reader_loop(reader, &term, &ctx);
-                            let exit = child.wait().ok().map(|s| ExitInfo { code: s.exit_code() as i32 });
+                            let exit = child.wait().ok().map(|s| ExitInfo {
+                                code: s.exit_code() as i32,
+                            });
                             let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
                             if matches!(*st, SessionState::Running) {
                                 *st = SessionState::Exited(exit.unwrap_or(ExitInfo { code: 0 }));
@@ -201,7 +217,13 @@ impl Session {
             t.resize(cols, rows);
         }
         if let Some(m) = self.master.as_ref() {
-            let _ = pty::resize(m.as_ref(), cols as u16, rows as u16, pixel_width, pixel_height);
+            let _ = pty::resize(
+                m.as_ref(),
+                cols as u16,
+                rows as u16,
+                pixel_width,
+                pixel_height,
+            );
         }
     }
 
@@ -276,7 +298,14 @@ mod tests {
     use std::sync::atomic::AtomicI32;
 
     fn opts(cmd: &str) -> SpawnOptions {
-        SpawnOptions { shell: Some("/bin/sh".into()), args: vec!["-c".into(), cmd.into()], shell_integration: false, cols: 40, rows: 10, ..SpawnOptions::default() }
+        SpawnOptions {
+            shell: Some("/bin/sh".into()),
+            args: vec!["-c".into(), cmd.into()],
+            shell_integration: false,
+            cols: 40,
+            rows: 10,
+            ..SpawnOptions::default()
+        }
     }
 
     fn wait_until(mut pred: impl FnMut() -> bool, timeout: Duration) -> bool {
@@ -294,7 +323,10 @@ mod tests {
     fn output_reaches_the_term_and_repaints_are_requested() {
         let ctx = egui::Context::default();
         let s = Session::spawn(opts("printf hi"), 100, Policy::default(), ctx);
-        assert!(wait_until(|| s.term().lock().unwrap().screen_text().contains("hi"), Duration::from_secs(5)));
+        assert!(wait_until(
+            || s.term().lock().unwrap().screen_text().contains("hi"),
+            Duration::from_secs(5)
+        ));
         assert!(wait_until(|| !s.is_running(), Duration::from_secs(5)));
         assert_eq!(s.state(), SessionState::Exited(ExitInfo { code: 0 }));
     }
@@ -305,7 +337,10 @@ mod tests {
         let s = Session::spawn(opts("read x; printf GOT:$x"), 100, Policy::default(), ctx);
         std::thread::sleep(Duration::from_millis(300));
         s.write(b"hello\n".to_vec());
-        assert!(wait_until(|| s.term().lock().unwrap().screen_text().contains("GOT:hello"), Duration::from_secs(5)));
+        assert!(wait_until(
+            || s.term().lock().unwrap().screen_text().contains("GOT:hello"),
+            Duration::from_secs(5)
+        ));
     }
 
     #[test]
@@ -332,7 +367,12 @@ mod tests {
     #[test]
     fn sigint_stops_a_running_child() {
         let ctx = egui::Context::default();
-        let s = Session::spawn(opts("trap '' INT; sleep 1; echo done"), 100, Policy::default(), ctx);
+        let s = Session::spawn(
+            opts("trap '' INT; sleep 1; echo done"),
+            100,
+            Policy::default(),
+            ctx,
+        );
         std::thread::sleep(Duration::from_millis(300));
         // shell traps SIGINT so it survives; sigterm on the whole thing should still work
         s.sigterm();

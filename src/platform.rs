@@ -51,10 +51,16 @@ pub struct SystemClipboard {
 
 impl SystemClipboard {
     pub fn new() -> SystemClipboard {
-        SystemClipboard { main: Mutex::new(None), shadow_primary: Mutex::new(None) }
+        SystemClipboard {
+            main: Mutex::new(None),
+            shadow_primary: Mutex::new(None),
+        }
     }
 
-    fn with_main<T>(&self, f: impl FnOnce(&mut Clipboard) -> Result<T, arboard::Error>) -> Option<T> {
+    fn with_main<T>(
+        &self,
+        f: impl FnOnce(&mut Clipboard) -> Result<T, arboard::Error>,
+    ) -> Option<T> {
         let mut slot = self.main.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
             *slot = Clipboard::new().ok();
@@ -73,11 +79,17 @@ impl SystemClipboard {
     /// Middle-click / PRIMARY-selection paste target. See the field doc above
     /// for why this is in-process only rather than a real X11 PRIMARY.
     pub fn set_primary(&self, text: String) {
-        *self.shadow_primary.lock().unwrap_or_else(|p| p.into_inner()) = Some(text);
+        *self
+            .shadow_primary
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(text);
     }
 
     pub fn get_primary(&self) -> Option<String> {
-        self.shadow_primary.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.shadow_primary
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 }
 

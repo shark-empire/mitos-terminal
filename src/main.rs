@@ -31,7 +31,11 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
-    let result = eframe::run_native("mitos-terminal", make_options(), Box::new(|cc| Ok(Box::new(TerminalApp::new(cc)))));
+    let result = eframe::run_native(
+        "mitos-terminal",
+        make_options(),
+        Box::new(|cc| Ok(Box::new(TerminalApp::new(cc)))),
+    );
 
     // Fallback renderer: a GPU/driver that refuses to give us a working
     // context is rare but not impossible (headless boxes, broken Mesa
@@ -42,7 +46,11 @@ fn main() -> eframe::Result<()> {
         Err(e) => {
             eprintln!("[mitos-terminal] hardware-accelerated rendering failed ({e}); retrying with a software fallback renderer");
             std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
-            eframe::run_native("mitos-terminal", make_options(), Box::new(|cc| Ok(Box::new(TerminalApp::new(cc)))))
+            eframe::run_native(
+                "mitos-terminal",
+                make_options(),
+                Box::new(|cc| Ok(Box::new(TerminalApp::new(cc)))),
+            )
         }
     }
 }

@@ -22,7 +22,9 @@ pub const MIN_FONT: f32 = 6.0;
 pub const MAX_FONT: f32 = 72.0;
 
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config")).join("mitos")
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from(".config"))
+        .join("mitos")
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +78,14 @@ pub struct FontCfg {
 
 impl Default for FontCfg {
     fn default() -> Self {
-        FontCfg { family: "monospace".into(), fallbacks: Vec::new(), size: 14.0, bold_is_bright: false, ligatures: true, line_height: 1.0 }
+        FontCfg {
+            family: "monospace".into(),
+            fallbacks: Vec::new(),
+            size: 14.0,
+            bold_is_bright: false,
+            ligatures: true,
+            line_height: 1.0,
+        }
     }
 }
 
@@ -98,7 +107,13 @@ pub struct WindowCfg {
 
 impl Default for WindowCfg {
     fn default() -> Self {
-        WindowCfg { opacity: 1.0, padding: 8.0, decorations: true, width: 1000.0, height: 650.0 }
+        WindowCfg {
+            opacity: 1.0,
+            padding: 8.0,
+            decorations: true,
+            width: 1000.0,
+            height: 650.0,
+        }
     }
 }
 
@@ -118,7 +133,14 @@ pub struct CursorCfg {
 
 impl Default for CursorCfg {
     fn default() -> Self {
-        CursorCfg { style: "block".into(), blink: true, blink_interval_ms: 530, unfocused: "hollow".into(), thickness: 2.0, color: None }
+        CursorCfg {
+            style: "block".into(),
+            blink: true,
+            blink_interval_ms: 530,
+            unfocused: "hollow".into(),
+            thickness: 2.0,
+            color: None,
+        }
     }
 }
 
@@ -129,7 +151,10 @@ impl CursorCfg {
             "bar" | "beam" | "ibeam" => CursorShape::Bar,
             _ => CursorShape::Block,
         };
-        CursorStyle { shape, blink: self.blink }
+        CursorStyle {
+            shape,
+            blink: self.blink,
+        }
     }
 }
 
@@ -143,7 +168,10 @@ pub struct ScrollCfg {
 
 impl Default for ScrollCfg {
     fn default() -> Self {
-        ScrollCfg { lines: 10_000, wheel_lines: 3.0 }
+        ScrollCfg {
+            lines: 10_000,
+            wheel_lines: 3.0,
+        }
     }
 }
 
@@ -304,7 +332,12 @@ pub struct BellCfg {
 
 impl Default for BellCfg {
     fn default() -> Self {
-        BellCfg { visual: true, audible: false, urgent: true, min_interval_ms: 200 }
+        BellCfg {
+            visual: true,
+            audible: false,
+            urgent: true,
+            min_interval_ms: 200,
+        }
     }
 }
 
@@ -346,7 +379,13 @@ pub struct PasteCfg {
 impl Default for PasteCfg {
     fn default() -> Self {
         let d = PasteConfig::default();
-        PasteCfg { confirm_multiline: d.confirm_multiline, confirm_bytes: d.confirm_bytes, max_bytes: d.max_bytes, strip_controls: d.strip_controls, ctrl_v_pastes: false }
+        PasteCfg {
+            confirm_multiline: d.confirm_multiline,
+            confirm_bytes: d.confirm_bytes,
+            max_bytes: d.max_bytes,
+            strip_controls: d.strip_controls,
+            ctrl_v_pastes: false,
+        }
     }
 }
 
@@ -364,7 +403,13 @@ pub struct LinksCfg {
 impl Default for LinksCfg {
     fn default() -> Self {
         let d = LinkPolicy::default();
-        LinksCfg { mode: "ctrl_click".into(), allowed_schemes: d.allowed_schemes, confirm_mismatch: true, confirm_all: false, detect_plain_urls: true }
+        LinksCfg {
+            mode: "ctrl_click".into(),
+            allowed_schemes: d.allowed_schemes,
+            confirm_mismatch: true,
+            confirm_all: false,
+            detect_plain_urls: true,
+        }
     }
 }
 
@@ -427,7 +472,11 @@ pub struct NotifyCfg {
 
 impl Default for NotifyCfg {
     fn default() -> Self {
-        NotifyCfg { long_command_secs: 10, only_when_unfocused: true, rate_limit_per_min: 12 }
+        NotifyCfg {
+            long_command_secs: 10,
+            only_when_unfocused: true,
+            rate_limit_per_min: 12,
+        }
     }
 }
 
@@ -497,7 +546,16 @@ pub struct Profile {
 
 impl Default for Profile {
     fn default() -> Self {
-        Profile { name: "default".into(), shell: None, args: Vec::new(), cwd: None, env: BTreeMap::new(), theme: None, font_size: None, title: None }
+        Profile {
+            name: "default".into(),
+            shell: None,
+            args: Vec::new(),
+            cwd: None,
+            env: BTreeMap::new(),
+            theme: None,
+            font_size: None,
+            title: None,
+        }
     }
 }
 
@@ -605,7 +663,11 @@ impl Config {
         self.profiles
             .iter()
             .find(|p| p.name == wanted)
-            .or_else(|| self.profiles.first().filter(|_| name.is_none() && self.general.default_profile == "default"))
+            .or_else(|| {
+                self.profiles
+                    .first()
+                    .filter(|_| name.is_none() && self.general.default_profile == "default")
+            })
             .cloned()
             .unwrap_or_default()
     }
@@ -654,7 +716,9 @@ impl Config {
     /// config hot-reload take effect on the very next frame.
     pub fn theme(&self, home: &HomeConf) -> Theme {
         let mut t = Theme::by_name(&self.theme.name).unwrap_or_else(Theme::futuristic_scifi);
-        if self.theme.follow_system && (self.theme.name == "futuristic-scifi" || self.theme.name == "light") {
+        if self.theme.follow_system
+            && (self.theme.name == "futuristic-scifi" || self.theme.name == "light")
+        {
             match home.theme_mode.as_deref() {
                 Some("light") => t = Theme::light(),
                 Some("dark") => t = Theme::futuristic_scifi(),
@@ -670,7 +734,11 @@ impl Config {
                 Some("dark") => false,
                 _ => t.light,
             };
-            t = if want_light { Theme::high_contrast_light() } else { Theme::high_contrast_dark() };
+            t = if want_light {
+                Theme::high_contrast_light()
+            } else {
+                Theme::high_contrast_dark()
+            };
         } else if let Some(scheme) = self.accessibility.color_scheme.as_deref() {
             t = match scheme {
                 "light" => t.as_light_variant(),
@@ -678,7 +746,12 @@ impl Config {
                 _ => t,
             };
         }
-        let accent = self.theme.accent.as_deref().and_then(parse_hex).or(home.accent);
+        let accent = self
+            .theme
+            .accent
+            .as_deref()
+            .and_then(parse_hex)
+            .or(home.accent);
         if let Some(a) = accent {
             t = t.with_accent(a);
         }
@@ -704,7 +777,8 @@ impl Config {
             t.cursor = c;
         }
         if self.theme.palette.len() == 16 {
-            let parsed: Vec<Option<Rgb>> = self.theme.palette.iter().map(|s| parse_hex(s)).collect();
+            let parsed: Vec<Option<Rgb>> =
+                self.theme.palette.iter().map(|s| parse_hex(s)).collect();
             if parsed.iter().all(|p| p.is_some()) {
                 for (i, p) in parsed.into_iter().enumerate() {
                     t.ansi[i] = p.unwrap_or(t.ansi[i]);
@@ -784,7 +858,9 @@ impl Config {
     }
 
     pub fn reduced_motion(&self, home: &HomeConf) -> bool {
-        let env = std::env::var("MITOS_REDUCED_MOTION").map(|v| v == "1" || v == "true").unwrap_or(false);
+        let env = std::env::var("MITOS_REDUCED_MOTION")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
         self.accessibility.reduced_motion || env || home.reduced_motion.unwrap_or(false)
     }
 }
@@ -829,7 +905,9 @@ impl HomeConf {
     }
 
     pub fn load() -> HomeConf {
-        std::fs::read_to_string(Self::path()).map(|c| HomeConf::parse(&c)).unwrap_or_default()
+        std::fs::read_to_string(Self::path())
+            .map(|c| HomeConf::parse(&c))
+            .unwrap_or_default()
     }
 
     /// Persist `matrix_rain=` in home.conf, keeping every other line untouched.
@@ -934,7 +1012,11 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::ZoomPane, "zoom_pane", "Maximise / restore pane"),
     (Action::Copy, "copy", "Copy selection"),
     (Action::Paste, "paste", "Paste"),
-    (Action::SemanticCopy, "semantic_copy", "Copy as path / file URI"),
+    (
+        Action::SemanticCopy,
+        "semantic_copy",
+        "Copy as path / file URI",
+    ),
     (Action::SelectAll, "select_all", "Select all"),
     (Action::Find, "find", "Find in scrollback"),
     (Action::FindNext, "find_next", "Find next"),
@@ -943,34 +1025,61 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::ZoomOut, "zoom_out", "Decrease font size"),
     (Action::ZoomReset, "zoom_reset", "Reset font size"),
     (Action::ScrollPageUp, "scroll_page_up", "Scroll page up"),
-    (Action::ScrollPageDown, "scroll_page_down", "Scroll page down"),
+    (
+        Action::ScrollPageDown,
+        "scroll_page_down",
+        "Scroll page down",
+    ),
     (Action::ScrollTop, "scroll_top", "Scroll to top"),
     (Action::ScrollBottom, "scroll_bottom", "Scroll to bottom"),
     (Action::ScrollLineUp, "scroll_line_up", "Scroll line up"),
-    (Action::ScrollLineDown, "scroll_line_down", "Scroll line down"),
+    (
+        Action::ScrollLineDown,
+        "scroll_line_down",
+        "Scroll line down",
+    ),
     (Action::PrevPrompt, "prev_prompt", "Jump to previous prompt"),
     (Action::NextPrompt, "next_prompt", "Jump to next prompt"),
-    (Action::ClearScrollback, "clear_scrollback", "Clear scrollback"),
+    (
+        Action::ClearScrollback,
+        "clear_scrollback",
+        "Clear scrollback",
+    ),
     (Action::ResetTerminal, "reset_terminal", "Reset terminal"),
     (Action::CommandPalette, "command_palette", "Command palette"),
     (Action::CommandHistory, "command_history", "Command history"),
     (Action::Settings, "settings", "Settings"),
     (Action::Fullscreen, "fullscreen", "Toggle fullscreen"),
-    (Action::ReloadConfig, "reload_config", "Reload configuration"),
+    (
+        Action::ReloadConfig,
+        "reload_config",
+        "Reload configuration",
+    ),
 ];
 
 impl Action {
     pub fn name(self) -> &'static str {
-        ACTIONS.iter().find(|(a, _, _)| *a == self).map(|(_, n, _)| *n).unwrap_or("?")
+        ACTIONS
+            .iter()
+            .find(|(a, _, _)| *a == self)
+            .map(|(_, n, _)| *n)
+            .unwrap_or("?")
     }
 
     pub fn label(self) -> &'static str {
-        ACTIONS.iter().find(|(a, _, _)| *a == self).map(|(_, _, l)| *l).unwrap_or("?")
+        ACTIONS
+            .iter()
+            .find(|(a, _, _)| *a == self)
+            .map(|(_, _, l)| *l)
+            .unwrap_or("?")
     }
 
     pub fn from_name(name: &str) -> Option<Action> {
         let n = name.trim().to_ascii_lowercase();
-        ACTIONS.iter().find(|(_, an, _)| *an == n).map(|(a, _, _)| *a)
+        ACTIONS
+            .iter()
+            .find(|(_, an, _)| *an == n)
+            .map(|(a, _, _)| *a)
     }
 }
 
@@ -991,7 +1100,10 @@ impl Chord {
     /// `+` and `=` share a physical key, so Ctrl+= and Ctrl++ are the same chord.
     pub fn matches(&self, key: Key, ctrl: bool, shift: bool, alt: bool) -> bool {
         let key_ok = self.key == key || (is_plus_or_equals(self.key) && is_plus_or_equals(key));
-        key_ok && self.ctrl == ctrl && self.alt == alt && (self.shift == shift || (is_plus_or_equals(self.key) && shift && ctrl))
+        key_ok
+            && self.ctrl == ctrl
+            && self.alt == alt
+            && (self.shift == shift || (is_plus_or_equals(self.key) && shift && ctrl))
     }
 }
 
@@ -1096,7 +1208,11 @@ pub fn key_from_name(name: &str) -> Option<Key> {
 }
 
 fn key_name(key: Key) -> &'static str {
-    KEY_NAMES.iter().find(|(_, k)| *k == key).map(|(n, _)| *n).unwrap_or("?")
+    KEY_NAMES
+        .iter()
+        .find(|(_, k)| *k == key)
+        .map(|(n, _)| *n)
+        .unwrap_or("?")
 }
 
 /// `"ctrl+shift+t"` → chord. Modifier order and case do not matter.
@@ -1119,7 +1235,12 @@ pub fn parse_chord(s: &str) -> Option<Chord> {
             other => key = Some(key_from_name(other)?),
         }
     }
-    Some(Chord { key: key?, ctrl, shift, alt })
+    Some(Chord {
+        key: key?,
+        ctrl,
+        shift,
+        alt,
+    })
 }
 
 pub fn chord_to_string(c: &Chord) -> String {
@@ -1224,7 +1345,9 @@ pub fn build_keymap(user: &BTreeMap<String, String>) -> (Vec<(Chord, Action)>, V
 
 /// The first binding for `action`, formatted for menus (`"ctrl+shift+t"`).
 pub fn shortcut_for(map: &[(Chord, Action)], action: Action) -> Option<String> {
-    map.iter().find(|(_, a)| *a == action).map(|(c, _)| chord_to_string(c))
+    map.iter()
+        .find(|(_, a)| *a == action)
+        .map(|(c, _)| chord_to_string(c))
 }
 
 #[cfg(test)]
@@ -1238,7 +1361,8 @@ mod tests {
 
     #[test]
     fn partial_file_overrides_only_what_it_names() {
-        let c = Config::parse("[font]\nsize = 18\n[cursor]\nstyle = \"bar\"\nblink = false\n").unwrap();
+        let c =
+            Config::parse("[font]\nsize = 18\n[cursor]\nstyle = \"bar\"\nblink = false\n").unwrap();
         assert_eq!(c.font.size, 18.0);
         assert_eq!(c.font.family, "monospace");
         assert_eq!(c.cursor.style().shape, CursorShape::Bar);
@@ -1254,12 +1378,17 @@ mod tests {
 
     #[test]
     fn unknown_keys_are_ignored() {
-        assert!(Config::parse("[future]\nthing = 1\n[font]\nsize = 12\nfuture_key = true\n").is_ok());
+        assert!(
+            Config::parse("[future]\nthing = 1\n[font]\nsize = 12\nfuture_key = true\n").is_ok()
+        );
     }
 
     #[test]
     fn values_are_clamped() {
-        let c = Config::parse("[font]\nsize = 500\n[window]\nopacity = 0.0\n[scrollback]\nlines = 999999999\n").unwrap();
+        let c = Config::parse(
+            "[font]\nsize = 500\n[window]\nopacity = 0.0\n[scrollback]\nlines = 999999999\n",
+        )
+        .unwrap();
         assert_eq!(c.font.size, MAX_FONT);
         assert_eq!(c.window.opacity, 0.1);
         assert_eq!(c.scrollback.lines, 1_000_000);
@@ -1269,8 +1398,14 @@ mod tests {
     fn roundtrip_through_toml() {
         let mut c = Config::default();
         c.font.size = 17.0;
-        c.profiles.push(Profile { name: "work".into(), shell: Some("/bin/zsh".into()), args: vec!["-l".into()], ..Profile::default() });
-        c.keybindings.insert("ctrl+shift+x".into(), "new_tab".into());
+        c.profiles.push(Profile {
+            name: "work".into(),
+            shell: Some("/bin/zsh".into()),
+            args: vec!["-l".into()],
+            ..Profile::default()
+        });
+        c.keybindings
+            .insert("ctrl+shift+x".into(), "new_tab".into());
         let text = c.to_toml().unwrap();
         assert_eq!(Config::parse(&text).unwrap(), c);
     }
@@ -1279,14 +1414,19 @@ mod tests {
     fn profiles_resolve_by_name_with_fallback() {
         let c = Config::parse("[[profile]]\nname = \"default\"\nshell = \"/bin/dash\"\n[[profile]]\nname = \"fish\"\nshell = \"/usr/bin/fish\"\n").unwrap();
         assert_eq!(c.profile(None).shell.as_deref(), Some("/bin/dash"));
-        assert_eq!(c.profile(Some("fish")).shell.as_deref(), Some("/usr/bin/fish"));
+        assert_eq!(
+            c.profile(Some("fish")).shell.as_deref(),
+            Some("/usr/bin/fish")
+        );
         assert_eq!(c.profile(Some("missing")).name, "default");
         assert_eq!(Config::default().profile(None).shell, None);
     }
 
     #[test]
     fn home_conf_parsing_matches_the_old_format() {
-        let h = HomeConf::parse("# comment\ntheme_mode=light\naccent_color=#FF8800\nmatrix_rain=false\n");
+        let h = HomeConf::parse(
+            "# comment\ntheme_mode=light\naccent_color=#FF8800\nmatrix_rain=false\n",
+        );
         assert_eq!(h.theme_mode.as_deref(), Some("light"));
         assert_eq!(h.accent, Some([0xff, 0x88, 0x00]));
         assert_eq!(h.matrix_rain, Some(false));
@@ -1302,7 +1442,10 @@ mod tests {
         let pinned = Config::parse("[theme]\nname = \"cyberpunk\"\n").unwrap();
         assert_eq!(pinned.theme(&home).id, "cyberpunk");
         let hc = Config::parse("[accessibility]\nhigh_contrast = true\n").unwrap();
-        assert!(hc.theme(&HomeConf::default()).id.starts_with("high-contrast"));
+        assert!(hc
+            .theme(&HomeConf::default())
+            .id
+            .starts_with("high-contrast"));
         let custom = Config::parse("[theme]\nbackground = \"#010203\"\n").unwrap();
         assert_eq!(custom.theme(&HomeConf::default()).bg, [1, 2, 3]);
     }
@@ -1310,7 +1453,10 @@ mod tests {
     #[test]
     fn rain_setting_precedence() {
         let cfg = Config::default();
-        assert!(!cfg.rain_enabled(&HomeConf::default()), "rain is opt-in by default");
+        assert!(
+            !cfg.rain_enabled(&HomeConf::default()),
+            "rain is opt-in by default"
+        );
         assert!(!cfg.rain_enabled(&HomeConf::parse("matrix_rain=false")));
         let forced = Config::parse("[effects]\nrain = true\n").unwrap();
         assert!(forced.rain_enabled(&HomeConf::parse("matrix_rain=false")));
@@ -1327,7 +1473,10 @@ mod tests {
         c.window.opacity = 0.3;
         c.apply_theme_preset("glass-neon");
         assert_eq!(c.theme.name, "glass-neon");
-        assert_eq!(c.theme.accent, None, "old overrides are cleared on preset switch");
+        assert_eq!(
+            c.theme.accent, None,
+            "old overrides are cleared on preset switch"
+        );
         let glass = crate::theme::Theme::glass_neon();
         assert_eq!(c.window.opacity, glass.opacity);
         assert_eq!(c.appearance.blur, glass.blur);
@@ -1367,7 +1516,10 @@ mod tests {
     fn color_scheme_accessibility_override_forces_a_variant() {
         let mut c = Config::default();
         c.theme.name = "cyberpunk".to_string();
-        assert!(!c.theme(&HomeConf::default()).light, "cyberpunk is naturally dark");
+        assert!(
+            !c.theme(&HomeConf::default()).light,
+            "cyberpunk is naturally dark"
+        );
         c.accessibility.color_scheme = Some("light".to_string());
         assert!(c.theme(&HomeConf::default()).light);
         c.accessibility.color_scheme = Some("dark".to_string());
@@ -1380,7 +1532,10 @@ mod tests {
 
     #[test]
     fn generic_overrides_cover_surface_border_and_glow_not_just_accent() {
-        let c = Config::parse("[theme]\nborder = \"#123456\"\nsurface = \"#654321\"\nglow_color = \"#00ff00\"\n").unwrap();
+        let c = Config::parse(
+            "[theme]\nborder = \"#123456\"\nsurface = \"#654321\"\nglow_color = \"#00ff00\"\n",
+        )
+        .unwrap();
         let t = c.theme(&HomeConf::default());
         assert_eq!(t.border, [0x12, 0x34, 0x56]);
         assert_eq!(t.surface, [0x65, 0x43, 0x21]);
@@ -1419,10 +1574,16 @@ mod tests {
     fn plus_and_equals_are_the_same_chord() {
         let c = parse_chord("ctrl+equals").unwrap();
         assert!(c.matches(Key::Equals, true, false, false));
-        assert!(c.matches(Key::Equals, true, true, false), "Ctrl+Shift+= is Ctrl++");
+        assert!(
+            c.matches(Key::Equals, true, true, false),
+            "Ctrl+Shift+= is Ctrl++"
+        );
         assert!(!c.matches(Key::Minus, true, false, false));
         let t = parse_chord("ctrl+shift+t").unwrap();
-        assert!(!t.matches(Key::T, true, false, false), "modifiers must match exactly");
+        assert!(
+            !t.matches(Key::T, true, false, false),
+            "modifiers must match exactly"
+        );
     }
 
     #[test]

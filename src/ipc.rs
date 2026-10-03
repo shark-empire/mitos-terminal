@@ -131,19 +131,27 @@ impl Registry {
     /// Inject a widget into the active session (IPC peers are same-user, hence trusted).
     pub fn inject_widget(&self, widget: RichWidget) {
         if let Some(t) = self.active_term() {
-            t.lock().unwrap_or_else(|p| p.into_inner()).inject_widget(widget, true);
+            t.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .inject_widget(widget, true);
         }
     }
 
     fn set_theme_override(&self, fg: Rgb, bg: Rgb) {
-        *self.theme_override.lock().unwrap_or_else(|p| p.into_inner()) = Some((fg, bg));
+        *self
+            .theme_override
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((fg, bg));
         self.theme_pending.store(true, Ordering::Release);
     }
 
     /// `Some((fg, bg))` once after a `ThemeChanged` request arrived.
     pub fn take_theme_override(&self) -> Option<(Rgb, Rgb)> {
         if self.theme_pending.swap(false, Ordering::AcqRel) {
-            *self.theme_override.lock().unwrap_or_else(|p| p.into_inner())
+            *self
+                .theme_override
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
         } else {
             None
         }
@@ -183,7 +191,7 @@ fn same_user(stream: &UnixStream) -> bool {
 
 /// Start the IPC server. Returns the socket path (remove it on exit).
 pub fn spawn_server(reg: Arc<Registry>, ctx: egui::Context) -> PathBuf {
-    let socket_path = ipc::terminal_socket(std::process::id());
+    let socket_path = PathBuf::from(ipc::terminal_socket(std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
     let path_for_task = socket_path.clone();
 
@@ -197,7 +205,7 @@ pub fn spawn_server(reg: Arc<Registry>, ctx: egui::Context) -> PathBuf {
         };
         // Only the owner may connect (the connect(2) permission check needs write access).
         let _ = std::fs::set_permissions(&path_for_task, std::fs::Permissions::from_mode(0o600));
-        eprintln!("[mitos-terminal] IPC listening on {:?}", path_for_task);
+        eprintln!("[mitos-terminal] IPC listening on {path_for_task:?}");
 
         let limiter = Arc::new(tokio::sync::Semaphore::new(8));
         loop {
@@ -228,14 +236,23 @@ pub fn spawn_server(reg: Arc<Registry>, ctx: egui::Context) -> PathBuf {
 
 async fn handle_client(mut stream: UnixStream, reg: Arc<Registry>, ctx: egui::Context) {
     loop {
-        let req = match tokio::time::timeout(Duration::from_secs(60), ipc::ipc_recv::<IpcRequest>(&mut stream)).await {
+        let req = match tokio::time::timeout(
+            Duration::from_secs(60),
+            ipc::ipc_recv::<IpcRequest>(&mut stream),
+        )
+        .await
+        {
             Ok(Ok(Some(r))) => r,
             _ => break,
         };
         let resp = match req {
             IpcRequest::GetTerminalBuffer => {
                 let (prompt, text) = reg.snapshot();
-                IpcResponse::BufferData { pid: std::process::id(), prompt, text }
+                IpcResponse::BufferData {
+                    pid: std::process::id(),
+                    prompt,
+                    text,
+                }
             }
             IpcRequest::InjectWidget { widget } => {
                 reg.inject_widget(widget);
@@ -247,7 +264,9 @@ async fn handle_client(mut stream: UnixStream, reg: Arc<Registry>, ctx: egui::Co
                 ctx.request_repaint();
                 IpcResponse::Ack
             }
-            IpcRequest::AutoCompletePath { .. } => IpcResponse::AutoCompleteResult { suggestions: vec![] },
+            IpcRequest::AutoCompletePath { .. } => IpcResponse::AutoCompleteResult {
+                suggestions: vec![],
+            },
             _ => IpcResponse::Ack,
         };
         if ipc::ipc_send(&mut stream, &resp).await.is_err() {
@@ -265,7 +284,10 @@ pub fn notify_user(title: String, body: String) {
     runtime().spawn(async move {
         let mut delivered = false;
         if let Ok(mut stream) = UnixStream::connect(ipc::gui_socket()).await {
-            let req = IpcRequest::NotifyUser { title: title.clone(), body: body.clone() };
+            let req = IpcRequest::NotifyUser {
+                title: title.clone(),
+                body: body.clone(),
+            };
             delivered = ipc::ipc_send(&mut stream, &req).await.is_ok();
         }
         if !delivered {
@@ -281,11 +303,17 @@ pub fn request_autocomplete(term: Arc<Mutex<Term>>, ctx: egui::Context, partial:
             Ok(s) => s,
             Err(_) => return,
         };
-        let req = IpcRequest::AutoCompletePath { partial_path: partial };
+        let req = IpcRequest::AutoCompletePath {
+            partial_path: partial,
+        };
         if ipc::ipc_send(&mut stream, &req).await.is_err() {
             return;
         }
-        let reply = tokio::time::timeout(Duration::from_secs(2), ipc::ipc_recv::<IpcResponse>(&mut stream)).await;
+        let reply = tokio::time::timeout(
+            Duration::from_secs(2),
+            ipc::ipc_recv::<IpcResponse>(&mut stream),
+        )
+        .await;
         if let Ok(Ok(Some(IpcResponse::AutoCompleteResult { suggestions }))) = reply {
             if let Some(first) = suggestions.into_iter().next() {
                 if let Ok(mut t) = term.lock() {
@@ -306,8 +334,15 @@ pub fn spawn_network_poller(reg: Arc<Registry>, ctx: egui::Context) {
             if let Ok(mut stream) = UnixStream::connect(ipc::network_socket()).await {
                 let req = IpcRequest::GetNetworkStatus;
                 if ipc::ipc_send(&mut stream, &req).await.is_ok() {
-                    let reply = tokio::time::timeout(Duration::from_secs(2), ipc::ipc_recv::<IpcResponse>(&mut stream)).await;
-                    if let Ok(Ok(Some(IpcResponse::NetworkStatus { is_captive_portal, .. }))) = reply {
+                    let reply = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        ipc::ipc_recv::<IpcResponse>(&mut stream),
+                    )
+                    .await;
+                    if let Ok(Ok(Some(IpcResponse::NetworkStatus {
+                        is_captive_portal, ..
+                    }))) = reply
+                    {
                         if is_captive_portal {
                             reg.inject_captive_portal_widget();
                             ctx.request_repaint();

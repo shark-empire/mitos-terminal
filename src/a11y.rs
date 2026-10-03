@@ -39,7 +39,12 @@ pub struct AnnounceQueue {
 
 impl AnnounceQueue {
     pub fn new() -> AnnounceQueue {
-        AnnounceQueue { pending: Vec::new(), last_text: None, last_at: None, min_gap: Duration::from_millis(300) }
+        AnnounceQueue {
+            pending: Vec::new(),
+            last_text: None,
+            last_at: None,
+            min_gap: Duration::from_millis(300),
+        }
     }
 
     pub fn push(&mut self, text: impl Into<String>, urgent: bool) {
@@ -48,12 +53,10 @@ impl AnnounceQueue {
             return;
         }
         let now = Instant::now();
-        if !urgent {
-            if self.last_text.as_deref() == Some(text.as_str()) {
-                if let Some(t) = self.last_at {
-                    if now.duration_since(t) < self.min_gap {
-                        return;
-                    }
+        if !urgent && self.last_text.as_deref() == Some(text.as_str()) {
+            if let Some(t) = self.last_at {
+                if now.duration_since(t) < self.min_gap {
+                    return;
                 }
             }
         }
@@ -95,7 +98,13 @@ pub fn speak(text: &str, enabled: bool, interrupt: bool) {
     if interrupt {
         cmd.arg("-C");
     }
-    let _ = cmd.arg("--").arg(text).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let _ = cmd
+        .arg("--")
+        .arg(text)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 // ---------------------------------------------------------------------------
@@ -112,14 +121,23 @@ const FREEDESKTOP_BELL_PATHS: &[&str] = &[
 /// falling back to writing BEL to `/dev/tty` (which the *controlling* terminal, if any —
 /// not this window — may turn into a beep). Silent no-op if nothing is available.
 pub fn ring_bell() {
-    if let Some(path) = FREEDESKTOP_BELL_PATHS.iter().find(|p| std::path::Path::new(p).exists()) {
+    if let Some(path) = FREEDESKTOP_BELL_PATHS
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+    {
         for player in ["paplay", "ffplay", "aplay"] {
             if crate::pty::which(player).is_some() {
                 let mut cmd = Command::new(player);
                 if player == "ffplay" {
                     cmd.args(["-nodisp", "-autoexit", "-loglevel", "quiet"]);
                 }
-                let ok = cmd.arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok();
+                let ok = cmd
+                    .arg(path)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .is_ok();
                 if ok {
                     return;
                 }
