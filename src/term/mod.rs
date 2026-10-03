@@ -77,18 +77,34 @@ pub enum TermEvent {
     Title(String),
     Bell,
     /// OSC 52 write request (already size-checked and decoded).
-    ClipboardStore { text: String },
+    ClipboardStore {
+        text: String,
+    },
     /// OSC 7 working directory report.
     Cwd(String),
-    Notify { title: String, body: String },
+    Notify {
+        title: String,
+        body: String,
+    },
     /// OSC 9;4 progress: state 0 = hidden, 1 = normal, 2 = error, 3 = indeterminate, 4 = paused.
-    Progress { state: u8, percent: u8 },
+    Progress {
+        state: u8,
+        percent: u8,
+    },
     /// OSC 133;C — a command started running.
-    CommandStarted { command: String },
+    CommandStarted {
+        command: String,
+    },
     /// OSC 133;D — a command finished.
-    CommandFinished { exit: Option<i32>, duration: Duration, command: String },
+    CommandFinished {
+        exit: Option<i32>,
+        duration: Duration,
+        command: String,
+    },
     /// A MITOS execution block was closed (`OSC MITOS_NEW_BLOCK`).
-    BlockClosed { duration: Duration },
+    BlockClosed {
+        duration: Duration,
+    },
     /// A shell "command not found" line was seen — ask mitos-pkgd about it.
     MissingCommand(String),
     /// `OSC MITOS_AUTOCOMPLETE` — ask mitos-file-manager for path suggestions.
@@ -97,7 +113,10 @@ pub enum TermEvent {
     ColorsChanged,
     /// A MROP widget's button was clicked (already policy/sanitize-checked);
     /// the session layer writes `command + "\n"` to the child.
-    WidgetCommand { id: u64, command: String },
+    WidgetCommand {
+        id: u64,
+        command: String,
+    },
 }
 
 /// What an application running inside the terminal is allowed to do.
@@ -148,7 +167,12 @@ pub struct Overrides {
 
 impl Default for Overrides {
     fn default() -> Self {
-        Overrides { fg: None, bg: None, cursor: None, palette: vec![None; 256] }
+        Overrides {
+            fg: None,
+            bg: None,
+            cursor: None,
+            palette: vec![None; 256],
+        }
     }
 }
 
@@ -301,7 +325,10 @@ impl Term {
     pub fn new(cols: usize, rows: usize, scrollback_limit: usize) -> Term {
         let cols = cols.clamp(1, MAX_COLS);
         let rows = rows.clamp(1, MAX_ROWS);
-        let style = CursorStyle { shape: CursorShape::Block, blink: true };
+        let style = CursorStyle {
+            shape: CursorShape::Block,
+            blink: true,
+        };
         Term {
             cols,
             rows,
@@ -522,7 +549,9 @@ impl Term {
     pub fn cluster_str(&self, ch: char) -> Option<&str> {
         let u = ch as u32;
         if u >= CLUSTER_BASE {
-            self.clusters.get((u - CLUSTER_BASE) as usize).map(|s| s.as_str())
+            self.clusters
+                .get((u - CLUSTER_BASE) as usize)
+                .map(|s| s.as_str())
         } else {
             None
         }
@@ -644,16 +673,17 @@ impl Term {
         self.last_dirty_row = usize::MAX;
         if self.dirty_all {
             self.dirty_all = false;
-            for d in self.dirty.iter_mut() {
-                *d = false;
-            }
+            self.dirty.fill(false);
             return Damage::Full;
         }
-        let rows: Vec<usize> =
-            self.dirty.iter().enumerate().filter(|(_, d)| **d).map(|(i, _)| i).collect();
-        for d in self.dirty.iter_mut() {
-            *d = false;
-        }
+        let rows: Vec<usize> = self
+            .dirty
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| **d)
+            .map(|(i, _)| i)
+            .collect();
+        self.dirty.fill(false);
         if rows.is_empty() {
             Damage::None
         } else {
@@ -687,7 +717,10 @@ impl Term {
 
     /// Text of screen row `y` (test / accessibility helper).
     pub fn screen_row_text(&self, y: usize) -> String {
-        self.grid.get(y).map(|r| self.row_string(r)).unwrap_or_default()
+        self.grid
+            .get(y)
+            .map(|r| self.row_string(r))
+            .unwrap_or_default()
     }
 
     /// The live screen as text, one line per row.
@@ -787,7 +820,12 @@ impl Term {
         let line = self.screen_top_abs() + y as u64;
         let id = self.next_widget_id;
         self.next_widget_id += 1;
-        self.widgets.push(Widget { id, line, trusted, widget });
+        self.widgets.push(Widget {
+            id,
+            line,
+            trusted,
+            widget,
+        });
         self.mark_dirty(y);
         self.linefeed();
         true
@@ -828,7 +866,13 @@ impl Term {
         if self.fresh.len() >= FRESH_QUEUE_CAP {
             self.fresh.pop_front();
         }
-        self.fresh.push_back(Fresh { line, c0: x0, c1: x1, t: self.now_ms, error: false });
+        self.fresh.push_back(Fresh {
+            line,
+            c0: x0,
+            c1: x1,
+            t: self.now_ms,
+            error: false,
+        });
     }
 
     /// Flag the text on screen row `y` as an error (red glitch effect).
@@ -842,7 +886,13 @@ impl Term {
             if self.fresh.len() >= FRESH_QUEUE_CAP {
                 self.fresh.pop_front();
             }
-            self.fresh.push_back(Fresh { line, c0: 0, c1: end as u16, t: self.now_ms, error: true });
+            self.fresh.push_back(Fresh {
+                line,
+                c0: 0,
+                c1: end as u16,
+                t: self.now_ms,
+                error: true,
+            });
         }
     }
 
@@ -867,7 +917,7 @@ impl Term {
     /// Drop link-table entries no cell references any more.
     fn compact_links(&mut self) {
         let mut used = vec![false; self.links.len() + 1];
-        let mut mark_row = |row: &Row, used: &mut Vec<bool>| {
+        let mark_row = |row: &Row, used: &mut Vec<bool>| {
             for c in &row.cells {
                 if c.link != 0 && (c.link as usize) < used.len() {
                     used[c.link as usize] = true;
@@ -1006,5 +1056,5 @@ impl Term {
 }
 
 pub(crate) fn default_tabs(cols: usize) -> Vec<bool> {
-    (0..cols).map(|c| c % 8 == 0 && c != 0).collect()
+    (0..cols).map(|c| c.is_multiple_of(8) && c != 0).collect()
 }

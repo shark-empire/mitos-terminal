@@ -58,7 +58,11 @@ impl Selection {
             return Some((c0, c1.min(last)));
         }
         let start = if line == lo.line { lo.col } else { 0 };
-        let end = if line == hi.line { hi.col.min(last) } else { last };
+        let end = if line == hi.line {
+            hi.col.min(last)
+        } else {
+            last
+        };
         Some((start, end))
     }
 }
@@ -71,7 +75,9 @@ pub struct UrlSpan {
     pub url: String,
 }
 
-const URL_SCHEMES: &[&str] = &["https://", "http://", "file://", "ftp://", "ssh://", "mailto:"];
+const URL_SCHEMES: &[&str] = &[
+    "https://", "http://", "file://", "ftp://", "ssh://", "mailto:",
+];
 
 impl Term {
     pub(super) fn row_mut_by_abs(&mut self, abs: u64) -> Option<&mut Row> {
@@ -91,13 +97,19 @@ impl Term {
 
     /// The selection point for view row `row`, column `col`.
     pub fn view_point(&self, row: usize, col: usize) -> SelPoint {
-        SelPoint { line: self.view_abs(row.min(self.rows - 1)), col: col.min(self.cols - 1) }
+        SelPoint {
+            line: self.view_abs(row.min(self.rows - 1)),
+            col: col.min(self.cols - 1),
+        }
     }
 
     fn clamp_point(&self, p: SelPoint) -> SelPoint {
         let first = self.dropped;
         let last = self.screen_top_abs() + self.rows as u64 - 1;
-        SelPoint { line: p.line.clamp(first, last), col: p.col.min(self.cols - 1) }
+        SelPoint {
+            line: p.line.clamp(first, last),
+            col: p.col.min(self.cols - 1),
+        }
     }
 
     pub fn has_selection(&self) -> bool {
@@ -115,15 +127,36 @@ impl Term {
         let (lo, hi) = match mode {
             SelMode::Word => {
                 let (a, b) = self.word_bounds(p.line, p.col);
-                (SelPoint { line: p.line, col: a }, SelPoint { line: p.line, col: b })
+                (
+                    SelPoint {
+                        line: p.line,
+                        col: a,
+                    },
+                    SelPoint {
+                        line: p.line,
+                        col: b,
+                    },
+                )
             }
             SelMode::Line => {
                 let (l0, l1) = self.logical_line_bounds(p.line);
-                (SelPoint { line: l0, col: 0 }, SelPoint { line: l1, col: self.cols - 1 })
+                (
+                    SelPoint { line: l0, col: 0 },
+                    SelPoint {
+                        line: l1,
+                        col: self.cols - 1,
+                    },
+                )
             }
             _ => (p, p),
         };
-        self.selection = Some(Selection { anchor: lo, head: hi, mode, origin_lo: lo, origin_hi: hi });
+        self.selection = Some(Selection {
+            anchor: lo,
+            head: hi,
+            mode,
+            origin_lo: lo,
+            origin_hi: hi,
+        });
         self.mark_all_dirty();
     }
 
@@ -138,8 +171,14 @@ impl Term {
             SelMode::Simple | SelMode::Block => sel.head = p,
             SelMode::Word => {
                 let (a, b) = self.word_bounds(p.line, p.col);
-                let ps = SelPoint { line: p.line, col: a };
-                let pe = SelPoint { line: p.line, col: b };
+                let ps = SelPoint {
+                    line: p.line,
+                    col: a,
+                };
+                let pe = SelPoint {
+                    line: p.line,
+                    col: b,
+                };
                 if pe < sel.origin_lo {
                     sel.anchor = sel.origin_hi;
                     sel.head = ps;
@@ -154,7 +193,10 @@ impl Term {
             SelMode::Line => {
                 let (l0, l1) = self.logical_line_bounds(p.line);
                 let ps = SelPoint { line: l0, col: 0 };
-                let pe = SelPoint { line: l1, col: self.cols - 1 };
+                let pe = SelPoint {
+                    line: l1,
+                    col: self.cols - 1,
+                };
                 if pe < sel.origin_lo {
                     sel.anchor = sel.origin_hi;
                     sel.head = ps;
@@ -174,16 +216,35 @@ impl Term {
     }
 
     pub fn sel_all(&mut self) {
-        let lo = SelPoint { line: self.dropped, col: 0 };
-        let hi = SelPoint { line: self.screen_top_abs() + self.rows as u64 - 1, col: self.cols - 1 };
-        self.selection = Some(Selection { anchor: lo, head: hi, mode: SelMode::Simple, origin_lo: lo, origin_hi: hi });
+        let lo = SelPoint {
+            line: self.dropped,
+            col: 0,
+        };
+        let hi = SelPoint {
+            line: self.screen_top_abs() + self.rows as u64 - 1,
+            col: self.cols - 1,
+        };
+        self.selection = Some(Selection {
+            anchor: lo,
+            head: hi,
+            mode: SelMode::Simple,
+            origin_lo: lo,
+            origin_hi: hi,
+        });
         self.mark_all_dirty();
     }
 
     /// Text of the current selection (`None` if there is none or it is empty).
     pub fn selection_text(&self) -> Option<String> {
         let sel = self.selection?;
-        let text = self.extract(sel.lo(), sel.hi(), sel.mode == SelMode::Block, true, sel.anchor.col, sel.head.col);
+        let text = self.extract(
+            sel.lo(),
+            sel.hi(),
+            sel.mode == SelMode::Block,
+            true,
+            sel.anchor.col,
+            sel.head.col,
+        );
         if text.is_empty() {
             None
         } else {
@@ -197,7 +258,15 @@ impl Term {
         self.extract(lo, hi, false, false, 0, 0)
     }
 
-    fn extract(&self, lo: SelPoint, hi: SelPoint, block: bool, inclusive: bool, bc0: usize, bc1: usize) -> String {
+    fn extract(
+        &self,
+        lo: SelPoint,
+        hi: SelPoint,
+        block: bool,
+        inclusive: bool,
+        bc0: usize,
+        bc1: usize,
+    ) -> String {
         let mut out = String::new();
         let (blo, bhi) = (bc0.min(bc1), bc0.max(bc1));
         let mut line = lo.line.max(self.dropped);
@@ -316,7 +385,11 @@ impl Term {
             if cell.flags & attr::WIDE_TAIL != 0 {
                 continue;
             }
-            let ch = if self.cluster_str(cell.ch).is_some() { '\u{FFFD}' } else { cell.ch };
+            let ch = if self.cluster_str(cell.ch).is_some() {
+                '\u{FFFD}'
+            } else {
+                cell.ch
+            };
             chars.push((ch, x));
         }
         let text: Vec<char> = chars.iter().map(|(c, _)| *c).collect();
@@ -327,7 +400,10 @@ impl Term {
             for scheme in URL_SCHEMES {
                 let sc: Vec<char> = scheme.chars().collect();
                 if i + sc.len() <= text.len()
-                    && text[i..i + sc.len()].iter().zip(sc.iter()).all(|(a, b)| a.to_ascii_lowercase() == *b)
+                    && text[i..i + sc.len()]
+                        .iter()
+                        .zip(sc.iter())
+                        .all(|(a, b)| a.to_ascii_lowercase() == *b)
                     && (i == 0 || !text[i - 1].is_alphanumeric())
                 {
                     let mut end = i + sc.len();
@@ -337,7 +413,11 @@ impl Term {
                     end = trim_url_end(&text, i, end);
                     if end > i + sc.len() {
                         let url: String = text[i..end].iter().collect();
-                        spans.push(UrlSpan { c0: chars[i].1, c1: chars[end - 1].1, url });
+                        spans.push(UrlSpan {
+                            c0: chars[i].1,
+                            c1: chars[end - 1].1,
+                            url,
+                        });
                         i = end;
                         matched = true;
                         break;
@@ -374,12 +454,16 @@ impl Term {
                 return Some(UrlSpan { c0, c1, url: uri });
             }
         }
-        self.urls_in_row(row).into_iter().find(|s| col >= s.c0 && col <= s.c1)
+        self.urls_in_row(row)
+            .into_iter()
+            .find(|s| col >= s.c0 && col <= s.c1)
     }
 }
 
 fn is_url_char(c: char) -> bool {
-    !c.is_whitespace() && !c.is_control() && !matches!(c, '<' | '>' | '"' | '\'' | '`' | '\u{FFFD}' | '\0')
+    !c.is_whitespace()
+        && !c.is_control()
+        && !matches!(c, '<' | '>' | '"' | '\'' | '`' | '\u{FFFD}' | '\0')
 }
 
 /// Drop trailing punctuation and unbalanced closing brackets.

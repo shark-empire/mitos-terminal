@@ -91,13 +91,27 @@ pub struct Pen {
 impl Pen {
     #[inline]
     pub fn cell(&self, ch: char, link: u16) -> Cell {
-        Cell { ch, fg: self.fg, bg: self.bg, ul: self.ul, flags: self.flags, link }
+        Cell {
+            ch,
+            fg: self.fg,
+            bg: self.bg,
+            ul: self.ul,
+            flags: self.flags,
+            link,
+        }
     }
 
     /// A blank cell that keeps the pen's background (BCE — background colour erase).
     #[inline]
     pub fn blank_bce(&self) -> Cell {
-        Cell { ch: ' ', fg: Color::Default, bg: self.bg, ul: Color::Default, flags: 0, link: 0 }
+        Cell {
+            ch: ' ',
+            fg: Color::Default,
+            bg: self.bg,
+            ul: Color::Default,
+            flags: 0,
+            link: 0,
+        }
     }
 }
 
@@ -113,11 +127,21 @@ pub struct Row {
 
 impl Row {
     pub fn new(cols: usize) -> Row {
-        Row { cells: vec![Cell::BLANK; cols], wrapped: false, marks: 0, tag: 0 }
+        Row {
+            cells: vec![Cell::BLANK; cols],
+            wrapped: false,
+            marks: 0,
+            tag: 0,
+        }
     }
 
     pub fn filled(cols: usize, cell: Cell) -> Row {
-        Row { cells: vec![cell; cols], wrapped: false, marks: 0, tag: 0 }
+        Row {
+            cells: vec![cell; cols],
+            wrapped: false,
+            marks: 0,
+            tag: 0,
+        }
     }
 
     /// Drop trailing default blanks (used when a row enters scrollback).
@@ -138,9 +162,7 @@ impl Row {
     }
 
     pub fn reset(&mut self, blank: Cell) {
-        for c in self.cells.iter_mut() {
-            *c = blank;
-        }
+        self.cells.fill(blank);
         self.wrapped = false;
         self.marks = 0;
         self.tag = 0;

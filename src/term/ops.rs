@@ -215,8 +215,8 @@ impl Term {
         if self.cursor.y == self.scroll_top {
             let (t, b) = (self.scroll_top, self.scroll_bottom);
             self.scroll_down_region(t, b, 1);
-        } else if self.cursor.y > 0 {
-            self.cursor.y -= 1;
+        } else {
+            self.cursor.y = self.cursor.y.saturating_sub(1);
         }
     }
 
@@ -258,7 +258,13 @@ impl Term {
 
     /// Scroll `[top, bottom]` up by `n`. With `to_scrollback`, rows leaving the
     /// top of a full-screen primary scroll go into history.
-    pub(super) fn scroll_up_region(&mut self, top: usize, bottom: usize, n: usize, to_scrollback: bool) {
+    pub(super) fn scroll_up_region(
+        &mut self,
+        top: usize,
+        bottom: usize,
+        n: usize,
+        to_scrollback: bool,
+    ) {
         let n = n.min(bottom + 1 - top);
         if n == 0 {
             return;
@@ -324,7 +330,11 @@ impl Term {
 
     pub(super) fn after_drop(&mut self) {
         let d = self.dropped;
-        let clear = self.selection.as_ref().map(|s| s.lo().line < d).unwrap_or(false);
+        let clear = self
+            .selection
+            .as_ref()
+            .map(|s| s.lo().line < d)
+            .unwrap_or(false);
         if clear {
             self.selection = None;
         }
@@ -503,13 +513,21 @@ impl Term {
     }
 
     pub(super) fn move_up(&mut self, n: usize) {
-        let top = if self.cursor.y >= self.scroll_top { self.scroll_top } else { 0 };
+        let top = if self.cursor.y >= self.scroll_top {
+            self.scroll_top
+        } else {
+            0
+        };
         self.cursor.y = self.cursor.y.saturating_sub(n).max(top);
         self.cursor.wrap_pending = false;
     }
 
     pub(super) fn move_down(&mut self, n: usize) {
-        let bottom = if self.cursor.y <= self.scroll_bottom { self.scroll_bottom } else { self.rows - 1 };
+        let bottom = if self.cursor.y <= self.scroll_bottom {
+            self.scroll_bottom
+        } else {
+            self.rows - 1
+        };
         self.cursor.y = self.cursor.y.saturating_add(n).min(bottom);
         self.cursor.wrap_pending = false;
     }
@@ -627,9 +645,10 @@ impl Term {
     /// DECALN: fill the screen with `E`.
     pub(super) fn screen_alignment(&mut self) {
         for y in 0..self.rows {
-            for c in self.grid[y].cells.iter_mut() {
-                *c = Cell { ch: 'E', ..Cell::BLANK };
-            }
+            self.grid[y].cells.fill(Cell {
+                ch: 'E',
+                ..Cell::BLANK
+            });
             self.grid[y].wrapped = false;
         }
         self.mark_all_dirty();

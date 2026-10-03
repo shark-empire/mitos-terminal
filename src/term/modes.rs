@@ -101,7 +101,10 @@ pub struct CharsetState {
 
 impl Default for CharsetState {
     fn default() -> Self {
-        CharsetState { g: [Charset::Ascii; 4], gl: 0 }
+        CharsetState {
+            g: [Charset::Ascii; 4],
+            gl: 0,
+        }
     }
 }
 

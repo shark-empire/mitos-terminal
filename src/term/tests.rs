@@ -38,10 +38,16 @@ fn check_invariants(t: &Term) {
         for (x, c) in r.cells.iter().enumerate() {
             if c.flags & attr::WIDE != 0 {
                 assert!(x + 1 < t.cols, "wide head in last column");
-                assert!(r.cells[x + 1].flags & attr::WIDE_TAIL != 0, "wide head without tail at {x},{y}");
+                assert!(
+                    r.cells[x + 1].flags & attr::WIDE_TAIL != 0,
+                    "wide head without tail at {x},{y}"
+                );
             }
             if c.flags & attr::WIDE_TAIL != 0 {
-                assert!(x > 0 && r.cells[x - 1].flags & attr::WIDE != 0, "orphan wide tail at {x},{y}");
+                assert!(
+                    x > 0 && r.cells[x - 1].flags & attr::WIDE != 0,
+                    "orphan wide tail at {x},{y}"
+                );
             }
         }
     }
@@ -274,7 +280,10 @@ fn sgr_basic_bright_and_reset() {
 #[test]
 fn sgr_256_and_truecolor_in_both_syntaxes() {
     let mut t = t(20, 2);
-    feed(&mut t, "\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[38:2::10:20:30mC\x1b[38:5:33mD\x1b[38:2:7:8:9mE");
+    feed(
+        &mut t,
+        "\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[38:2::10:20:30mC\x1b[38:5:33mD\x1b[38:2:7:8:9mE",
+    );
     assert_eq!(cell(&t, 0, 0).fg, Color::Indexed(196));
     assert_eq!(cell(&t, 1, 0).bg, Color::Rgb(1, 2, 3));
     assert_eq!(cell(&t, 2, 0).fg, Color::Rgb(10, 20, 30));
@@ -285,7 +294,10 @@ fn sgr_256_and_truecolor_in_both_syntaxes() {
 #[test]
 fn sgr_underline_styles_and_colour() {
     let mut t = t(20, 2);
-    feed(&mut t, "\x1b[4:3mA\x1b[4mB\x1b[21mC\x1b[24mD\x1b[58;2;1;2;3m\x1b[4mE");
+    feed(
+        &mut t,
+        "\x1b[4:3mA\x1b[4mB\x1b[21mC\x1b[24mD\x1b[58;2;1;2;3m\x1b[4mE",
+    );
     assert!(cell(&t, 0, 0).flags & attr::CURLY_UL != 0);
     assert!(cell(&t, 1, 0).flags & attr::UNDERLINE != 0);
     assert!(cell(&t, 2, 0).flags & attr::DOUBLE_UL != 0);
@@ -338,7 +350,10 @@ fn alt_screen_has_no_scrollback() {
 #[test]
 fn mode_toggles_are_tracked_and_reported() {
     let mut t = t(10, 3);
-    feed(&mut t, "\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?1h\x1b[?25l\x1b[?1004h");
+    feed(
+        &mut t,
+        "\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?1h\x1b[?25l\x1b[?1004h",
+    );
     assert!(t.modes.bracketed_paste && t.modes.app_cursor && t.modes.focus_events);
     assert_eq!(t.modes.mouse, MouseMode::Normal);
     assert_eq!(t.modes.mouse_enc, MouseEnc::Sgr);
@@ -358,11 +373,29 @@ fn mode_toggles_are_tracked_and_reported() {
 fn cursor_style_decscusr() {
     let mut t = t(10, 3);
     feed(&mut t, "\x1b[5 q");
-    assert_eq!(t.cursor_style(), CursorStyle { shape: CursorShape::Bar, blink: true });
+    assert_eq!(
+        t.cursor_style(),
+        CursorStyle {
+            shape: CursorShape::Bar,
+            blink: true
+        }
+    );
     feed(&mut t, "\x1b[2 q");
-    assert_eq!(t.cursor_style(), CursorStyle { shape: CursorShape::Block, blink: false });
+    assert_eq!(
+        t.cursor_style(),
+        CursorStyle {
+            shape: CursorShape::Block,
+            blink: false
+        }
+    );
     feed(&mut t, "\x1b[0 q");
-    assert_eq!(t.cursor_style(), CursorStyle { shape: CursorShape::Block, blink: true });
+    assert_eq!(
+        t.cursor_style(),
+        CursorStyle {
+            shape: CursorShape::Block,
+            blink: true
+        }
+    );
 }
 
 #[test]
@@ -414,7 +447,10 @@ fn osc_title_and_length_cap() {
     let long = "x".repeat(900);
     feed(&mut t, &format!("\x1b]0;{long}\x07"));
     assert!(t.title().chars().count() <= 256);
-    t.set_policy(Policy { title: false, ..Policy::default() });
+    t.set_policy(Policy {
+        title: false,
+        ..Policy::default()
+    });
     feed(&mut t, "\x1b]0;nope\x07");
     assert_ne!(t.title(), "nope");
 }
@@ -431,7 +467,10 @@ fn title_stack() {
 #[test]
 fn osc8_hyperlinks() {
     let mut t = t(40, 3);
-    feed(&mut t, "\x1b]8;;https://example.com/a;b\x07link\x1b]8;;\x07 plain");
+    feed(
+        &mut t,
+        "\x1b]8;;https://example.com/a;b\x07link\x1b]8;;\x07 plain",
+    );
     let c = cell(&t, 0, 0);
     assert_ne!(c.link, 0);
     assert_eq!(t.link_uri(c.link), Some("https://example.com/a;b"));
@@ -446,11 +485,17 @@ fn osc8_hyperlinks() {
 #[test]
 fn osc8_respects_policy_and_limits() {
     let mut t = t(40, 3);
-    t.set_policy(Policy { hyperlinks: false, ..Policy::default() });
+    t.set_policy(Policy {
+        hyperlinks: false,
+        ..Policy::default()
+    });
     feed(&mut t, "\x1b]8;;https://x.org\x07hi");
     assert_eq!(cell(&t, 0, 0).link, 0);
     let mut u = t2();
-    u.set_policy(Policy { max_uri: 10, ..Policy::default() });
+    u.set_policy(Policy {
+        max_uri: 10,
+        ..Policy::default()
+    });
     feed(&mut u, "\x1b]8;;https://example.com/very/long\x07hi");
     assert_eq!(cell(&u, 0, 0).link, 0);
 }
@@ -472,8 +517,14 @@ fn osc52_write_allowed_read_denied() {
     let ev = t.take_events();
     assert!(matches!(&ev[0], TermEvent::ClipboardStore { text } if text == "hello"));
     feed(&mut t, "\x1b]52;c;?\x07");
-    assert!(t.take_events().is_empty(), "clipboard reads must never be answered");
-    t.set_policy(Policy { clipboard_write: false, ..Policy::default() });
+    assert!(
+        t.take_events().is_empty(),
+        "clipboard reads must never be answered"
+    );
+    t.set_policy(Policy {
+        clipboard_write: false,
+        ..Policy::default()
+    });
     feed(&mut t, "\x1b]52;c;aGVsbG8=\x07");
     assert!(t.take_events().is_empty());
 }
@@ -481,7 +532,12 @@ fn osc52_write_allowed_read_denied() {
 #[test]
 fn osc4_and_dynamic_colours() {
     let mut t = t(20, 3);
-    t.set_theme_colors([200, 200, 200], [4, 10, 18], [1, 2, 3], crate::theme::Theme::dark().ansi);
+    t.set_theme_colors(
+        [200, 200, 200],
+        [4, 10, 18],
+        [1, 2, 3],
+        crate::theme::Theme::dark().ansi,
+    );
     feed(&mut t, "\x1b]4;1;rgb:ff/00/00\x07");
     assert_eq!(t.overrides.palette[1], Some([255, 0, 0]));
     let _ = t.take_events();
@@ -500,12 +556,28 @@ fn osc4_and_dynamic_colours() {
 #[test]
 fn notifications_and_progress() {
     let mut t = t(20, 3);
-    feed(&mut t, "\x1b]777;notify;Build;done\x07\x1b]9;4;1;42\x07\x1b]9;hello\x07");
+    feed(
+        &mut t,
+        "\x1b]777;notify;Build;done\x07\x1b]9;4;1;42\x07\x1b]9;hello\x07",
+    );
     let ev = t.take_events();
-    assert!(ev.iter().any(|e| matches!(e, TermEvent::Notify { title, body } if title == "Build" && body == "done")));
-    assert!(ev.iter().any(|e| matches!(e, TermEvent::Progress { state: 1, percent: 42 })));
-    assert!(ev.iter().any(|e| matches!(e, TermEvent::Notify { body, .. } if body == "hello")));
-    t.set_policy(Policy { notifications: false, ..Policy::default() });
+    assert!(ev.iter().any(
+        |e| matches!(e, TermEvent::Notify { title, body } if title == "Build" && body == "done")
+    ));
+    assert!(ev.iter().any(|e| matches!(
+        e,
+        TermEvent::Progress {
+            state: 1,
+            percent: 42
+        }
+    )));
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, TermEvent::Notify { body, .. } if body == "hello")));
+    t.set_policy(Policy {
+        notifications: false,
+        ..Policy::default()
+    });
     feed(&mut t, "\x1b]777;notify;a;b\x07");
     assert!(t.take_events().is_empty());
 }
@@ -520,14 +592,22 @@ fn bell_event() {
 #[test]
 fn osc133_tracks_commands_and_prompts() {
     let mut t = t(40, 6);
-    feed(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07ls -la\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07");
+    feed(
+        &mut t,
+        "\x1b]133;A\x07$ \x1b]133;B\x07ls -la\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07",
+    );
     let ev = t.take_events();
-    assert!(ev.iter().any(|e| matches!(e, TermEvent::CommandStarted { command } if command == "ls -la")));
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, TermEvent::CommandStarted { command } if command == "ls -la")));
     assert!(ev.iter().any(|e| matches!(e, TermEvent::CommandFinished { exit: Some(0), command, .. } if command == "ls -la")));
     assert_eq!(t.commands().len(), 1);
     assert_eq!(t.commands()[0].exit, Some(0));
     assert_eq!(t.prompt_lines(), vec![t.screen_top_abs()]);
-    assert_eq!(t.jump_prompt(t.screen_top_abs() + 3, true), Some(t.screen_top_abs()));
+    assert_eq!(
+        t.jump_prompt(t.screen_top_abs() + 3, true),
+        Some(t.screen_top_abs())
+    );
 }
 
 #[test]
@@ -538,7 +618,9 @@ fn command_not_found_scan_is_armed_only_after_enter() {
     t.arm_command_scan();
     feed(&mut t, "bash: foo: command not found\r\n");
     let ev = t.take_events();
-    assert!(ev.iter().any(|e| matches!(e, TermEvent::MissingCommand(c) if c == "foo")));
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, TermEvent::MissingCommand(c) if c == "foo")));
     t.arm_command_scan();
     feed(&mut t, "bash: foo: command not found\r\n");
     assert!(t.take_events().is_empty(), "same command is suggested once");
@@ -554,22 +636,33 @@ fn mitos_execution_blocks() {
     assert_eq!(t.cursor_pos(), (0, 1));
     feed(&mut t, &format!("out\r\n\x1b]{osc};next$ \x07"));
     let ev = t.take_events();
-    assert!(ev.iter().any(|e| matches!(e, TermEvent::BlockClosed { .. })));
+    assert!(ev
+        .iter()
+        .any(|e| matches!(e, TermEvent::BlockClosed { .. })));
     assert_eq!(t.block_prompt(), "next$");
 }
 
 #[test]
 fn widgets_are_anchored_and_policy_gated() {
     let mut t = t(40, 6);
-    let w = || RichWidget::Button { label: "Go".to_string(), cmd: "true".to_string() };
+    let w = || RichWidget::Button {
+        label: "Go".to_string(),
+        cmd: "true".to_string(),
+    };
     assert!(t.inject_widget(w(), true));
     assert_eq!(t.widgets().len(), 1);
     assert_eq!(t.widgets()[0].line, t.screen_top_abs());
     assert!(t.view_row(0).marks & mark::WIDGET != 0);
     assert_eq!(t.cursor_pos().1, 1);
-    t.set_policy(Policy { widgets: false, ..Policy::default() });
+    t.set_policy(Policy {
+        widgets: false,
+        ..Policy::default()
+    });
     assert!(!t.inject_widget(w(), false));
-    assert!(t.inject_widget(w(), true), "trusted widgets ignore the child-facing policy");
+    assert!(
+        t.inject_widget(w(), true),
+        "trusted widgets ignore the child-facing policy"
+    );
 }
 
 #[test]
@@ -644,7 +737,10 @@ fn invalid_utf8_becomes_replacement_character() {
     let mut t = t(10, 3);
     t.process(&[b'a', 0xff, b'b']);
     let text = row(&t, 0);
-    assert!(text.starts_with('a') && text.contains('\u{fffd}') && text.ends_with('b'), "{text:?}");
+    assert!(
+        text.starts_with('a') && text.contains('\u{fffd}') && text.ends_with('b'),
+        "{text:?}"
+    );
 }
 
 #[test]
@@ -695,7 +791,10 @@ fn view_offset_holds_position_while_output_streams() {
 fn resize_reflows_wrapped_lines_and_tracks_cursor() {
     let mut t = t(10, 5);
     feed(&mut t, "0123456789abcdef");
-    assert_eq!((row(&t, 0).as_str(), row(&t, 1).as_str()), ("0123456789", "abcdef"));
+    assert_eq!(
+        (row(&t, 0).as_str(), row(&t, 1).as_str()),
+        ("0123456789", "abcdef")
+    );
     t.resize(20, 5);
     assert_eq!(row(&t, 0), "0123456789abcdef");
     assert_eq!(t.cursor_pos(), (16, 0));
@@ -795,7 +894,10 @@ fn selection_survives_scrolling_and_dies_with_its_lines() {
     for i in 0..20 {
         feed(&mut t, &format!("y{i}\r\n"));
     }
-    assert!(t.selection.is_none(), "selection must be dropped once its lines leave the scrollback");
+    assert!(
+        t.selection.is_none(),
+        "selection must be dropped once its lines leave the scrollback"
+    );
 }
 
 #[test]
@@ -814,13 +916,26 @@ fn search_is_case_aware_and_crosses_soft_wraps() {
 #[test]
 fn plain_text_url_detection() {
     let mut t = t(60, 3);
-    feed(&mut t, "see https://example.com/a_(b). ok (https://x.org) mailto:a@b.co");
+    feed(
+        &mut t,
+        "see https://example.com/a_(b). ok (https://x.org) mailto:a@b.co",
+    );
     let row0 = t.view_row(0).clone();
     let urls = t.urls_in_row(&row0);
     let list: Vec<&str> = urls.iter().map(|u| u.url.as_str()).collect();
-    assert_eq!(list, vec!["https://example.com/a_(b)", "https://x.org", "mailto:a@b.co"]);
+    assert_eq!(
+        list,
+        vec![
+            "https://example.com/a_(b)",
+            "https://x.org",
+            "mailto:a@b.co"
+        ]
+    );
     let line = t.view_abs(0);
-    assert_eq!(t.url_at(line, 8).map(|u| u.url), Some("https://example.com/a_(b)".to_string()));
+    assert_eq!(
+        t.url_at(line, 8).map(|u| u.url),
+        Some("https://example.com/a_(b)".to_string())
+    );
     assert!(t.url_at(line, 0).is_none());
 }
 
@@ -885,7 +1000,11 @@ fn random_bytes_and_escape_soup_never_break_invariants() {
         let mut chunk = Vec::with_capacity(4096);
         for _ in 0..4096 {
             let r = rng.next();
-            let b = if r % 9 == 0 { (r >> 8) as u8 } else { alphabet[(r >> 16) as usize % alphabet.len()] };
+            let b = if r.is_multiple_of(9) {
+                (r >> 8) as u8
+            } else {
+                alphabet[(r >> 16) as usize % alphabet.len()]
+            };
             chunk.push(b);
         }
         t.process(&chunk);
@@ -903,7 +1022,10 @@ fn random_bytes_and_escape_soup_never_break_invariants() {
 fn huge_parameters_are_harmless() {
     let mut t = t(20, 5);
     feed(&mut t, "\x1b[999999999@\x1b[999999999P\x1b[999999999L\x1b[999999999M\x1b[999999999S\x1b[999999999T");
-    feed(&mut t, "\x1b[999999999;999999999H\x1b[999999999b\x1b[999999999X\x1b[65535C");
+    feed(
+        &mut t,
+        "\x1b[999999999;999999999H\x1b[999999999b\x1b[999999999X\x1b[65535C",
+    );
     check_invariants(&t);
 }
 

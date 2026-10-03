@@ -40,7 +40,7 @@ impl Perform for Term {
                 self.ghost_text = None;
             }
             0x09 => self.tab_forward(1),
-            0x0A | 0x0B | 0x0C => self.linefeed(),
+            0x0A..=0x0C => self.linefeed(),
             0x0D => self.carriage_return(),
             0x0E => self.cursor.charset.gl = 1,
             0x0F => self.cursor.charset.gl = 0,
@@ -154,43 +154,41 @@ impl Perform for Term {
                     self.tabs[x] = false;
                 }
                 3 => {
-                    for t in self.tabs.iter_mut() {
-                        *t = false;
-                    }
+                    self.tabs.fill(false);
                 }
                 _ => {}
             },
             ([], 'h') => {
-                for i in 0..n {
-                    self.set_ansi_mode(ps[i], true);
+                for &p in ps.iter().take(n) {
+                    self.set_ansi_mode(p, true);
                 }
             }
             ([], 'l') => {
-                for i in 0..n {
-                    self.set_ansi_mode(ps[i], false);
+                for &p in ps.iter().take(n) {
+                    self.set_ansi_mode(p, false);
                 }
             }
             ([b'?'], 'h') => {
-                for i in 0..n {
-                    self.set_private_mode(ps[i], true);
+                for &p in ps.iter().take(n) {
+                    self.set_private_mode(p, true);
                 }
             }
             ([b'?'], 'l') => {
-                for i in 0..n {
-                    self.set_private_mode(ps[i], false);
+                for &p in ps.iter().take(n) {
+                    self.set_private_mode(p, false);
                 }
             }
             ([b'?'], 's') => {
-                for i in 0..n {
-                    if let Some(v) = self.private_mode_state(ps[i]) {
-                        self.saved_modes.insert(ps[i], v);
+                for &p in ps.iter().take(n) {
+                    if let Some(v) = self.private_mode_state(p) {
+                        self.saved_modes.insert(p, v);
                     }
                 }
             }
             ([b'?'], 'r') => {
-                for i in 0..n {
-                    if let Some(v) = self.saved_modes.get(&ps[i]).copied() {
-                        self.set_private_mode(ps[i], v);
+                for &p in ps.iter().take(n) {
+                    if let Some(v) = self.saved_modes.get(&p).copied() {
+                        self.set_private_mode(p, v);
                     }
                 }
             }
@@ -211,7 +209,7 @@ impl Perform for Term {
             ([b' '], 'q') => self.set_cursor_style(ps[0]),
             ([b'!'], 'p') => self.soft_reset(),
             ([b'>'], 'q') => {
-                let s = format!("\x1bP>|mitos-terminal({})\x1b\\", VERSION);
+                let s = format!("\x1bP>|mitos-terminal({VERSION})\x1b\\");
                 self.reply(s.into_bytes());
             }
             ([b'?'], 'u') => self.reply(b"\x1b[?0u".to_vec()),
@@ -259,12 +257,13 @@ impl Perform for Term {
                     return;
                 }
                 if params.len() <= 1 {
-                    for p in self.overrides.palette.iter_mut() {
-                        *p = None;
-                    }
+                    self.overrides.palette.fill(None);
                 } else {
                     for p in &params[1..] {
-                        if let Some(i) = std::str::from_utf8(p).ok().and_then(|s| s.parse::<usize>().ok()) {
+                        if let Some(i) = std::str::from_utf8(p)
+                            .ok()
+                            .and_then(|s| s.parse::<usize>().ok())
+                        {
                             if i < 256 {
                                 self.overrides.palette[i] = None;
                             }
@@ -345,12 +344,13 @@ impl Perform for Term {
             }
             b"9" => self.osc_9(params),
             b"777" => {
-                if self.policy.notifications
-                    && params.len() >= 3
-                    && params[1] == b"notify"
-                {
+                if self.policy.notifications && params.len() >= 3 && params[1] == b"notify" {
                     let title = clean_text(&lossy(params[2]), 96);
-                    let body = if params.len() > 3 { clean_text(&lossy(&join_params(params, 3)), 300) } else { String::new() };
+                    let body = if params.len() > 3 {
+                        clean_text(&lossy(&join_params(params, 3)), 300)
+                    } else {
+                        String::new()
+                    };
                     self.events.push(TermEvent::Notify { title, body });
                 }
             }
@@ -423,13 +423,37 @@ impl Term {
                     self.leave_alt(true);
                 }
             }
-            1000 => self.modes.mouse = if on { MouseMode::Normal } else { MouseMode::Off },
-            1002 => self.modes.mouse = if on { MouseMode::Button } else { MouseMode::Off },
+            1000 => {
+                self.modes.mouse = if on {
+                    MouseMode::Normal
+                } else {
+                    MouseMode::Off
+                }
+            }
+            1002 => {
+                self.modes.mouse = if on {
+                    MouseMode::Button
+                } else {
+                    MouseMode::Off
+                }
+            }
             1003 => self.modes.mouse = if on { MouseMode::Any } else { MouseMode::Off },
             1004 => self.modes.focus_events = on,
-            1005 => self.modes.mouse_enc = if on { MouseEnc::Utf8 } else { MouseEnc::Default },
+            1005 => {
+                self.modes.mouse_enc = if on {
+                    MouseEnc::Utf8
+                } else {
+                    MouseEnc::Default
+                }
+            }
             1006 => self.modes.mouse_enc = if on { MouseEnc::Sgr } else { MouseEnc::Default },
-            1015 => self.modes.mouse_enc = if on { MouseEnc::Urxvt } else { MouseEnc::Default },
+            1015 => {
+                self.modes.mouse_enc = if on {
+                    MouseEnc::Urxvt
+                } else {
+                    MouseEnc::Default
+                }
+            }
             1007 => self.modes.alt_scroll = on,
             2004 => self.modes.bracketed_paste = on,
             2026 => {
@@ -469,7 +493,10 @@ impl Term {
 
     fn set_cursor_style(&mut self, ps: u16) {
         let (shape, blink) = match ps {
-            0 => (self.default_cursor_style.shape, self.default_cursor_style.blink),
+            0 => (
+                self.default_cursor_style.shape,
+                self.default_cursor_style.blink,
+            ),
             1 => (CursorShape::Block, true),
             2 => (CursorShape::Block, false),
             3 => (CursorShape::Underline, true),
@@ -604,14 +631,16 @@ impl Term {
         let mut i = 1;
         let mut changed = false;
         while i + 1 < params.len() {
-            let idx = std::str::from_utf8(params[i]).ok().and_then(|s| s.parse::<usize>().ok());
+            let idx = std::str::from_utf8(params[i])
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok());
             if let Some(idx) = idx {
                 if idx < 256 {
                     let spec = params[i + 1];
                     if spec == b"?" {
                         if self.policy.color_queries {
                             let rgb = self.palette_color(idx as u8);
-                            self.color_reply(&format!("4;{}", idx), rgb, term);
+                            self.color_reply(&format!("4;{idx}"), rgb, term);
                         }
                     } else if self.policy.color_changes {
                         if let Some(rgb) = parse_osc_color(spec) {
@@ -655,16 +684,30 @@ impl Term {
     fn osc_9(&mut self, params: &[&[u8]]) {
         // ConEmu / Windows Terminal progress: OSC 9;4;state;percent
         if params.len() >= 2 && params[1] == b"4" {
-            let state = params.get(2).and_then(|p| std::str::from_utf8(p).ok()).and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
-            let pct = params.get(3).and_then(|p| std::str::from_utf8(p).ok()).and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
-            self.events.push(TermEvent::Progress { state: state.min(4), percent: pct.min(100) });
+            let state = params
+                .get(2)
+                .and_then(|p| std::str::from_utf8(p).ok())
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(0);
+            let pct = params
+                .get(3)
+                .and_then(|p| std::str::from_utf8(p).ok())
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(0);
+            self.events.push(TermEvent::Progress {
+                state: state.min(4),
+                percent: pct.min(100),
+            });
             return;
         }
         // iTerm2 style notification: OSC 9;message
         if self.policy.notifications && params.len() >= 2 {
             let body = clean_text(&lossy(&join_params(params, 1)), 300);
             if !body.is_empty() {
-                self.events.push(TermEvent::Notify { title: "Terminal".to_string(), body });
+                self.events.push(TermEvent::Notify {
+                    title: "Terminal".to_string(),
+                    body,
+                });
             }
         }
     }
@@ -686,7 +729,10 @@ impl Term {
                 self.cmd_input_start = Some((line, self.cursor.x));
             }
             b'C' => {
-                let end = SelPoint { line: self.screen_top_abs() + self.cursor.y as u64, col: self.cursor.x };
+                let end = SelPoint {
+                    line: self.screen_top_abs() + self.cursor.y as u64,
+                    col: self.cursor.x,
+                };
                 let input_start = self.cmd_input_start.take();
                 let command = match input_start {
                     Some((line, col)) => {
@@ -731,7 +777,11 @@ impl Term {
                         rec.exit = exit;
                         rec.duration = Some(d);
                         let command = rec.command.clone();
-                        self.events.push(TermEvent::CommandFinished { exit, duration: d, command });
+                        self.events.push(TermEvent::CommandFinished {
+                            exit,
+                            duration: d,
+                            command,
+                        });
                     }
                 }
             }
@@ -770,7 +820,9 @@ impl Term {
     /// in the theme's prompt colour.
     pub(super) fn new_block(&mut self, prompt: &str) {
         if let Some(started) = self.block_started.take() {
-            self.events.push(TermEvent::BlockClosed { duration: started.elapsed() });
+            self.events.push(TermEvent::BlockClosed {
+                duration: started.elapsed(),
+            });
         }
         self.ghost_text = None;
         if self.cursor.x != 0 || self.cursor.wrap_pending {
@@ -878,7 +930,10 @@ fn lossy(b: &[u8]) -> String {
 
 /// Strip control characters and cap the length (titles, notification text, prompts).
 pub(crate) fn clean_text(s: &str, max_chars: usize) -> String {
-    s.chars().filter(|c| !c.is_control()).take(max_chars).collect()
+    s.chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
 }
 
 pub(crate) fn hex_component(s: &str) -> Option<u8> {
@@ -905,7 +960,7 @@ pub(crate) fn parse_osc_color(spec: &[u8]) -> Option<Rgb> {
     }
     if let Some(hex) = s.strip_prefix('#') {
         let n = hex.len();
-        if !hex.is_ascii() || n == 0 || n % 3 != 0 || n > 12 {
+        if !hex.is_ascii() || n == 0 || !n.is_multiple_of(3) || n > 12 {
             return None;
         }
         let d = n / 3;
@@ -943,22 +998,6 @@ pub(crate) fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-pub(crate) fn base64_encode(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(T[((n >> 18) & 63) as usize] as char);
-        out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
-    }
-    out
-}
-
 fn hexval(c: u8) -> Option<u8> {
     match c {
         b'0'..=b'9' => Some(c - b'0'),
@@ -990,7 +1029,9 @@ pub(crate) fn percent_decode(s: &str) -> Option<String> {
 }
 
 fn local_hostname() -> Option<String> {
-    std::fs::read_to_string("/proc/sys/kernel/hostname").ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 /// `file://host/path` → local path. Remote hosts (SSH sessions) are rejected so a

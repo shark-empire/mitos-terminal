@@ -168,7 +168,11 @@ fn reflow_primary(
             }
         }
 
-        let cursor_off = if has_cursor { Some((cursor_abs - i) * old_cols + cursor.0) } else { None };
+        let cursor_off = if has_cursor {
+            Some((cursor_abs - i) * old_cols + cursor.0)
+        } else {
+            None
+        };
         let keep_min = cursor_off.map(|o| o + 1).unwrap_or(0);
         while cells.len() > keep_min && cells.last().map(|c| c.is_blank()).unwrap_or(false) {
             cells.pop();
@@ -188,7 +192,12 @@ fn reflow_primary(
                 end -= 1;
             }
             let wrapped = end < cells.len();
-            out.push(Row { cells: cells[start..end].to_vec(), wrapped, marks: 0, tag: 0 });
+            out.push(Row {
+                cells: cells[start..end].to_vec(),
+                wrapped,
+                marks: 0,
+                tag: 0,
+            });
             start = end;
             if start >= cells.len() {
                 break;
@@ -220,7 +229,9 @@ fn reflow_primary(
     let cy_pre = new_cursor.1.min(out.len().saturating_sub(1));
     while out.len() > cy_pre + 1 {
         let droppable = match out.last() {
-            Some(r) => r.marks == 0 && r.tag == 0 && !r.wrapped && r.cells.iter().all(|c| c.is_blank()),
+            Some(r) => {
+                r.marks == 0 && r.tag == 0 && !r.wrapped && r.cells.iter().all(|c| c.is_blank())
+            }
             None => false,
         };
         if droppable {
