@@ -146,7 +146,10 @@ fn layout_and_security_multi_pane_workflow() {
     );
     assert!(paste.needs_confirm.is_some());
 
-    assert!(layout.close_pane(3));
+    assert!(
+        !layout.close_pane(3),
+        "closing one of several panes must not report the whole tab as closed"
+    );
     assert_eq!(layout.all_panes().len(), 2);
 }
 
