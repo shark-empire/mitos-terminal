@@ -21,7 +21,7 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | Scrollback | ✅ | capped `VecDeque<Row>`, `config::ScrollCfg` |
 | Hyperlinks | ✅ | OSC 8 + plain-URL detection (`term/select.rs`), policy-gated open (`security.rs`) |
 | Bracketed paste | ✅ | DECSET 2004, `security::prepare_paste` |
-| Mouse reporting | ✅ | X10/Normal/Button/Any × default/UTF-8/SGR/urxvt (`input.rs`) |
+| Mouse reporting | ✅ | X10/Normal/Button/Any × default/UTF-8/SGR/urxvt (`input.rs`), delivered to the program by `app.rs::report_pane_mouse`: press/release, drag and motion, wheel. Hold Shift to select locally instead |
 | OSC sequences | ✅ | 0/1/2/4/7/8/9/10/11/12/52/104/110/111/112/133/777 + MITOS-private ones |
 | Bell handling | ✅ | visual/audible/urgent, rate-independent of terminal flood (`term/mod.rs` events cap) |
 | Title/icon updates | ✅ | OSC 0/1/2, title stack (`CSI 22/23 t`) |
@@ -35,10 +35,10 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | Windows | ✅ | `Action::NewWindow` re-execs the binary; each OS window is a separate process |
 | Searchable scrollback | ✅ | `Term::search`, `Ctrl+F` |
 | Copy/paste, selection | ✅ | simple/word/line/block selection (`term/select.rs`), paste sanitising (`security.rs`) |
-| Context menu | ⚠️ | not implemented — right-click currently does nothing. Everything it would expose (copy/paste/clear/reset) is reachable via the command palette (`Ctrl+Shift+P`) or keybindings today |
+| Context menu | ✅ | right-click menu (`app.rs::pane_menu`): copy/paste/select all, split/new tab/close pane, find, clear scrollback, reset, settings, command palette. Skipped while the program has mouse reporting on, unless Shift is held |
 | Profiles | ✅ | `config::Profile`, `[[profile]]` in `terminal.toml` |
 | Default shell selection | ✅ | `pty::resolve_shell` (explicit → `mitos-shell` → `$SHELL` → `/bin/sh`) |
-| Working-directory inheritance | ✅ | OSC 7 (`Term::cwd`) — new tabs/panes don't yet inherit it automatically (see Limitations) |
+| Working-directory inheritance | ✅ | new tabs and splits start in the focused shell's real directory (`/proc/<pid>/cwd`, with OSC 7 `Term::cwd` as the fallback) |
 | Command history integration | ✅ | OSC 133 command records (`Term::commands`), prev/next-prompt jump |
 | Zoom | ✅ | font size (`Ctrl+`/`Ctrl-`), pane zoom/maximize (`Layout::toggle_zoom`) |
 | Font selection | ⚠️ | config accepted and round-trips; only the bundled monospace font actually renders — see Limitations |
@@ -119,9 +119,6 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
   middle-click in another) but doesn't publish to X11's real PRIMARY
   selection, so a *different* application's middle-click paste won't see it.
 - **Split-pane dividers** aren't draggable yet; new splits are always 50/50.
-- **New panes/tabs** don't inherit the previous pane's OSC-7 working
-  directory yet — they start in the profile's configured directory (or
-  `$HOME`).
 - **`--tty` recovery mode**: this is an `eframe`/OpenGL GUI application: it
   cannot run on a display-less virtual console. A real recovery path would
   be a separate, text-mode-only binary, not a flag on this one.
