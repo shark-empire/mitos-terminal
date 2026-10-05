@@ -263,6 +263,14 @@ pub fn spawn(opts: &SpawnOptions) -> Result<SpawnedPty> {
     if let Some(dir) = integration.as_ref() {
         cmd.env("MITOS_SHELL_INTEGRATION_DIR", dir);
     }
+    // A session started straight from init or a display manager can have no locale at all, which
+    // makes every program fall back to plain ASCII although this terminal speaks only UTF-8.
+    let has_locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
+    if !has_locale {
+        cmd.env("LANG", "C.UTF-8");
+    }
     for (k, v) in &opts.env {
         cmd.env(k, v);
     }

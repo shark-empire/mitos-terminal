@@ -89,9 +89,7 @@ pub fn scheme_of(uri: &str) -> Option<String> {
 /// userinfo was present (`http://google.com@evil.example` is a classic spoof).
 pub fn host_of(uri: &str) -> Option<(String, bool)> {
     let rest = &uri[uri.find("://")? + 3..];
-    let end = rest
-        .find(|c: char| c == '/' || c == '?' || c == '#')
-        .unwrap_or(rest.len());
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..end];
     let (userinfo, hostport) = match authority.rfind('@') {
         Some(i) => (true, &authority[i + 1..]),
@@ -196,7 +194,7 @@ fn visible_host(text: &str) -> Option<String> {
         return host_of(t).map(|(h, _)| h);
     }
     // bare "example.com/path"
-    let first = t.split(|c: char| c == '/' || c == '?' || c == '#').next()?;
+    let first = t.split(['/', '?', '#']).next()?;
     let looks_like_domain = first.contains('.')
         && !first.contains(' ')
         && first

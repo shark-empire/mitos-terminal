@@ -23,14 +23,14 @@ use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher}
 use crate::a11y::AnnounceQueue;
 use crate::config::{self, Action, Chord, Config, HomeConf};
 use crate::fx;
-use crate::input::{self, Mods};
+use crate::input::{self, Mods, MouseEvent, MouseKind};
 use crate::layout::{Axis, FocusDir, Layout, PaneId, Rect as LRect};
 use crate::platform::SystemClipboard;
 use crate::pty::SpawnOptions;
 use crate::render::{self, Metrics, PaintOpts};
 use crate::security::{self, LinkDecision, Paste};
 use crate::session::{Session, SessionState};
-use crate::term::{SelMode, Term, TermEvent};
+use crate::term::{MouseEnc, MouseMode, SelMode, Term, TermEvent};
 use crate::theme::{self, Rgb, StatusStyle, TabStyle, Theme};
 
 const MIN_COLS: usize = 4;
@@ -48,6 +48,15 @@ struct PendingLink {
     reason: String,
 }
 
+/// What has to survive from one frame to the next to report the pointer to a program: which
+/// buttons it is holding down, and the cell it was last reported in (so motion is only sent when
+/// the pointer really moves to another cell).
+#[derive(Clone, Copy, Default)]
+struct MouseTrack {
+    buttons: u8,
+    cell: Option<(usize, usize)>,
+}
+
 struct PaneState {
     session: Session,
     rain: Option<fx::CodeRain>,
@@ -55,8 +64,103 @@ struct PaneState {
     last_blink_flip: f64,
     hover_cell: Option<(usize, usize)>,
     drag_active: bool,
+    mouse: MouseTrack,
     last_seqno: u64,
     notified_finish: bool,
+}
+
+const MOUSE_BUTTONS: [(egui::PointerButton, u8); 3] = [
+    (egui::PointerButton::Primary, 0),
+    (egui::PointerButton::Middle, 1),
+    (egui::PointerButton::Secondary, 2),
+];
+
+/// Entries of the pane's right-click menu; `None` is a separator.
+const PANE_MENU: &[Option<(&str, Action)>] = &[
+    Some(("Copy", Action::Copy)),
+    Some(("Paste", Action::Paste)),
+    Some(("Select all", Action::SelectAll)),
+    None,
+    Some(("Split right", Action::SplitRight)),
+    Some(("Split down", Action::SplitDown)),
+    Some(("New tab", Action::NewTab)),
+    Some(("Close pane", Action::ClosePane)),
+    None,
+    Some(("Find…", Action::Find)),
+    Some(("Clear scrollback", Action::ClearScrollback)),
+    Some(("Reset terminal", Action::ResetTerminal)),
+    None,
+    Some(("Settings", Action::Settings)),
+    Some(("Command palette", Action::CommandPalette)),
+];
+
+fn mouse_event(
+    kind: MouseKind,
+    button: u8,
+    at: (usize, usize),
+    mods: Mods,
+    held: Option<u8>,
+) -> MouseEvent {
+    MouseEvent {
+        kind,
+        button,
+        col: at.0,
+        row: at.1,
+        mods,
+        held,
+    }
+}
+
+/// Translate this frame's pointer input into terminal mouse events for one pane. `notches` is the
+/// wheel movement in lines (positive = up). Which of them a program really receives is decided
+/// afterwards by the tracking mode it negotiated (`input::encode_mouse`).
+fn mouse_events(
+    ctx: &egui::Context,
+    track: &mut MouseTrack,
+    area: ERect,
+    hovered: bool,
+    cell_at: impl Fn(Pos2) -> (usize, usize),
+    notches: isize,
+) -> Vec<MouseEvent> {
+    ctx.input(|i| {
+        let mods = Mods::from_egui(&i.modifiers);
+        let mut out = Vec::new();
+        let pos = i.pointer.latest_pos();
+        let at = match pos.map(cell_at).or(track.cell) {
+            Some(at) => at,
+            None => return out,
+        };
+        let inside = hovered && pos.is_some_and(|p| area.contains(p));
+        let held = (0..3u8).find(|&b| track.buttons & (1u8 << b) != 0);
+        if (inside || held.is_some()) && track.cell != Some(at) {
+            out.push(mouse_event(MouseKind::Move, 0, at, mods, held));
+        }
+        for (button, code) in MOUSE_BUTTONS {
+            let bit = 1u8 << code;
+            if inside && i.pointer.button_pressed(button) {
+                track.buttons |= bit;
+                out.push(mouse_event(MouseKind::Press, code, at, mods, None));
+            }
+            if track.buttons & bit != 0 && !i.pointer.button_down(button) {
+                track.buttons &= !bit;
+                out.push(mouse_event(MouseKind::Release, code, at, mods, None));
+            }
+        }
+        if inside || track.buttons != 0 {
+            track.cell = Some(at);
+        }
+        if inside && notches != 0 {
+            let kind = if notches > 0 {
+                MouseKind::WheelUp
+            } else {
+                MouseKind::WheelDown
+            };
+            for _ in 0..notches.unsigned_abs().min(10) {
+                out.push(mouse_event(kind, 0, at, mods, None));
+            }
+        }
+        out
+    })
 }
 
 pub struct TerminalApp {
@@ -94,6 +198,8 @@ pub struct TerminalApp {
     last_focused_pane: Option<PaneId>,
     /// Whether the OS window has keyboard focus, tracked from `egui::Event::WindowFocused`.
     window_focused: bool,
+    /// Right-click menu picks; run at the start of the next frame, like keybindings.
+    menu_actions: Vec<Action>,
     /// `user@host`, computed once at startup for the status-strip chrome
     /// (`theme::StatusStyle`) — never touches what the shell prints.
     user_host: String,
@@ -106,12 +212,13 @@ fn new_pane(
     cols: usize,
     rows: usize,
     profile_name: Option<&str>,
+    cwd: Option<PathBuf>,
 ) -> PaneState {
     let profile = config.profile(profile_name);
     let opts = SpawnOptions {
         shell: profile.shell.clone(),
         args: profile.args.clone(),
-        cwd: profile.cwd.as_ref().map(PathBuf::from),
+        cwd: cwd.or_else(|| profile.cwd.as_ref().map(PathBuf::from)),
         env: profile.env.clone(),
         cols: cols.clamp(MIN_COLS, crate::term::MAX_COLS) as u16,
         rows: rows.clamp(MIN_ROWS, crate::term::MAX_ROWS) as u16,
@@ -144,6 +251,7 @@ fn new_pane(
         last_blink_flip: 0.0,
         hover_cell: None,
         drag_active: false,
+        mouse: MouseTrack::default(),
         last_seqno: 0,
         notified_finish: false,
     }
@@ -166,7 +274,7 @@ impl TerminalApp {
         let metrics = render::measure(&cc.egui_ctx, &font);
         let metrics_font_size = config.font.size;
 
-        let first = new_pane(&cc.egui_ctx, &config, &home, 80, 24, None);
+        let first = new_pane(&cc.egui_ctx, &config, &home, 80, 24, None, None);
         let pane_id: PaneId = 1;
         let registry = crate::ipc::Registry::new();
         registry.add(pane_id, first.session.term());
@@ -215,6 +323,7 @@ impl TerminalApp {
             notify_times: std::collections::VecDeque::new(),
             last_focused_pane: None,
             window_focused: true,
+            menu_actions: Vec::new(),
             user_host: local_user_host(),
         }
     }
@@ -285,13 +394,27 @@ impl TerminalApp {
         }
     }
 
+    /// Working directory of the focused pane's shell, so a new tab or split opens "here". The
+    /// shell's real directory (`/proc/<pid>/cwd`) is preferred because it is right with or
+    /// without shell integration; the OSC 7 path is the fallback when `/proc` cannot be read.
+    fn inherited_cwd(&self) -> Option<PathBuf> {
+        let pane = self.panes.get(&self.layout.focused_pane())?;
+        let from_proc = pane.session.pid().and_then(crate::pty::process_cwd);
+        from_proc.or_else(|| {
+            let term = pane.session.term();
+            let guard = term.lock().ok()?;
+            guard.cwd().map(PathBuf::from)
+        })
+    }
+
     fn new_pane_in_active_tab(&mut self, ctx: &egui::Context, axis: Option<Axis>) {
         if self.layout.all_panes().len() >= self.config.security.max_panes {
             return;
         }
         let id = self.next_pane_id;
         self.next_pane_id += 1;
-        let pane = new_pane(ctx, &self.config, &self.home, 80, 24, None);
+        let cwd = self.inherited_cwd();
+        let pane = new_pane(ctx, &self.config, &self.home, 80, 24, None, cwd);
         self.registry.add(id, pane.session.term());
         self.panes.insert(id, pane);
         match axis {
@@ -788,13 +911,19 @@ impl eframe::App for TerminalApp {
         let now = ctx.input(|i| i.time);
         let dt = (now - self.last_time).clamp(0.0, 0.1) as f32;
         self.last_time = now;
+        let mut focus_change = None;
         ctx.input(|i| {
             for event in &i.events {
                 if let egui::Event::WindowFocused(focused) = event {
-                    self.window_focused = *focused;
+                    focus_change = Some(*focused);
                 }
             }
         });
+        if let Some(focused) = focus_change {
+            self.window_focused = focused;
+            // DECSET 1004 also covers the whole window gaining or losing focus.
+            self.send_focus_report(self.layout.focused_pane(), focused);
+        }
 
         // ----- global keyboard shortcuts (menu-style actions) --------------
         let focused_pane = self.layout.focused_pane();
@@ -807,7 +936,8 @@ impl eframe::App for TerminalApp {
             self.send_focus_report(focused_pane, true);
             self.last_focused_pane = Some(focused_pane);
         }
-        let actions: Vec<Action> = ctx.input(|i| {
+        let mut actions: Vec<Action> = std::mem::take(&mut self.menu_actions);
+        let keyed: Vec<Action> = ctx.input(|i| {
             let mods = i.modifiers;
             self.keymap
                 .iter()
@@ -817,6 +947,7 @@ impl eframe::App for TerminalApp {
                 .map(|(_, a)| *a)
                 .collect()
         });
+        actions.extend(keyed);
         for a in actions {
             self.dispatch_action(ctx, a);
         }
@@ -1006,6 +1137,7 @@ impl eframe::App for TerminalApp {
                     }
 
                     self.handle_pane_mouse(ctx, &resp, pane_id, px, cell, cols);
+                    self.pane_menu(ctx, &resp, pane_id);
                     if focused {
                         self.handle_pane_keyboard(ctx, pane_id);
                     }
@@ -1137,6 +1269,79 @@ fn paint_tab_decoration(
 }
 
 impl TerminalApp {
+    /// Mouse tracking the program in a pane asked for, and the pane's row count.
+    fn mouse_tracking(&self, pane_id: PaneId) -> (MouseMode, MouseEnc, usize) {
+        let off = (MouseMode::Off, MouseEnc::Default, 0);
+        match self.panes.get(&pane_id) {
+            Some(pane) => match pane.session.term().lock() {
+                Ok(t) => (t.modes.mouse, t.modes.mouse_enc, t.rows()),
+                Err(_) => off,
+            },
+            None => off,
+        }
+    }
+
+    /// Hand this frame's pointer input to the program running in the pane.
+    fn report_pane_mouse(
+        &mut self,
+        ctx: &egui::Context,
+        resp: &egui::Response,
+        pane_id: PaneId,
+        (mode, enc): (MouseMode, MouseEnc),
+        cell_at: impl Fn(Pos2) -> (usize, usize),
+        notches: isize,
+    ) {
+        let mut track = match self.panes.get(&pane_id) {
+            Some(pane) => pane.mouse,
+            None => return,
+        };
+        let area = resp.rect;
+        let hovered = resp.hovered();
+        let events = mouse_events(ctx, &mut track, area, hovered, cell_at, notches);
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            pane.mouse = track;
+            for event in events {
+                if let Some(bytes) = input::encode_mouse(mode, enc, &event) {
+                    pane.session.write(bytes);
+                }
+            }
+        }
+    }
+
+    /// Right-click menu for a pane. A pick is queued and runs at the start of the next frame, like
+    /// a keybinding, so it may add or close panes without disturbing the pane being drawn. While
+    /// the program has the mouse (see `handle_pane_mouse`) the click belongs to it, unless Shift.
+    fn pane_menu(&mut self, ctx: &egui::Context, resp: &egui::Response, pane_id: PaneId) {
+        let (mode, _, _) = self.mouse_tracking(pane_id);
+        if mode != MouseMode::Off && !ctx.input(|i| i.modifiers.shift) {
+            return;
+        }
+        if resp.secondary_clicked() {
+            self.layout.focus(pane_id);
+            self.registry.set_active(pane_id);
+        }
+        let mut chosen = None;
+        let _ = resp.context_menu(|ui| {
+            for entry in PANE_MENU {
+                match entry {
+                    Some((label, action)) => {
+                        if ui.button(*label).clicked() {
+                            chosen = Some(*action);
+                            ui.close_menu();
+                        }
+                    }
+                    None => {
+                        ui.separator();
+                    }
+                }
+            }
+        });
+        if let Some(action) = chosen {
+            self.menu_actions.push(action);
+            ctx.request_repaint();
+        }
+    }
+
     fn handle_pane_mouse(
         &mut self,
         ctx: &egui::Context,
@@ -1162,6 +1367,21 @@ impl TerminalApp {
             let r = ((p.y - px.top() - pad) / cell.row_h).floor().max(0.0) as usize;
             (c.min(cols.saturating_sub(1)), r)
         };
+        let (mode, enc, rows) = self.mouse_tracking(pane_id);
+        if mode != MouseMode::Off && !ctx.input(|i| i.modifiers.shift) {
+            // The program in the pane asked for the mouse (vim, tmux, htop, less...): it gets the
+            // clicks, drags and wheel instead of this terminal's own selection and scrollback.
+            // Holding Shift is the usual way to bypass that and select text anyway.
+            let scroll = ctx.input(|i| i.raw_scroll_delta.y);
+            let lines = (scroll / cell.row_h.max(1.0)) * self.config.scrollback.wheel_lines;
+            let notches = lines.round() as isize;
+            let at = |p: Pos2| {
+                let (c, r) = cell_of(p);
+                (c, r.min(rows.saturating_sub(1)))
+            };
+            self.report_pane_mouse(ctx, resp, pane_id, (mode, enc), at, notches);
+            return;
+        }
         let sel_cfg = self.config.selection.clone();
         let links_cfg = self.config.links.clone();
 
@@ -1712,12 +1932,17 @@ impl TerminalApp {
                     }
                 });
             });
-        if go {
+        if go || cancel {
             if let Some(pending) = self.pending_link.take() {
-                crate::platform::open_external(&pending.url);
+                if go {
+                    crate::platform::open_external(&pending.url);
+                }
+                // Hand the keyboard back to the pane the link came from.
+                if self.panes.contains_key(&pending.pane) {
+                    self.layout.focus(pending.pane);
+                    self.registry.set_active(pending.pane);
+                }
             }
-        } else if cancel {
-            self.pending_link = None;
         }
     }
 

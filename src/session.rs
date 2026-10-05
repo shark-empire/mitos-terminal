@@ -358,9 +358,11 @@ mod tests {
         o.shell = Some("/definitely/not/a/binary/xyz".into());
         o.args.clear();
         let s = Session::spawn(o, 100, Policy::default(), ctx);
-        // resolve_shell falls back to a real shell for a bad explicit path, so this
-        // spawns successfully — the meaningful assertion is just that nothing panics
-        // and the session reaches a terminal state.
+        // resolve_shell falls back to a real shell for a bad explicit path, so the session still
+        // starts, as an interactive shell that waits for input. Nothing panics, and it exits as
+        // soon as it is told to.
+        assert!(s.is_running());
+        s.write(b"exit\n".to_vec());
         assert!(wait_until(|| !s.is_running(), Duration::from_secs(5)));
     }
 

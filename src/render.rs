@@ -86,16 +86,16 @@ impl Run {
 
 /// Coalesce one row into attribute runs, resolving palette colours and
 /// swapping fg/bg for `INVERSE` and the whole-screen `DECSCNM` mode. Wide-tail
-/// spacer cells are skipped (their glyph already came from the head cell).
+/// spacer cells are skipped (their glyph already came from the head cell),
+/// hidden cells keep their background but contribute no text, and trailing
+/// blanks that would paint nothing are dropped (see `trim_blank_tail`).
 pub fn coalesce_row(theme: &Theme, ov: &Overrides, row: &Row, screen_reverse: bool) -> Vec<Run> {
     let mut runs: Vec<Run> = Vec::new();
     for (x, cell) in row.cells.iter().enumerate() {
         if cell.flags & attr::WIDE_TAIL != 0 {
             continue;
         }
-        if cell.flags & attr::HIDDEN != 0 {
-            continue;
-        }
+        let hidden = cell.flags & attr::HIDDEN != 0;
         let mut fg = theme.resolve(ov, cell.fg, true);
         let mut bg = theme.resolve(ov, cell.bg, false);
         let ul = if cell.ul == Color::Default {
@@ -121,12 +121,16 @@ pub fn coalesce_row(theme: &Theme, ov: &Overrides, row: &Row, screen_reverse: bo
             .filter(|r| r.col1 == x && same_style_run(r, fg, bg, ul, cell.flags));
         match extend {
             Some(r) => {
-                push_char(&mut r.text, ch);
+                if !hidden {
+                    push_char(&mut r.text, ch);
+                }
                 r.col1 = x + width;
             }
             None => {
                 let mut text = String::new();
-                push_char(&mut text, ch);
+                if !hidden {
+                    push_char(&mut text, ch);
+                }
                 runs.push(Run {
                     col0: x,
                     col1: x + width,
@@ -140,7 +144,28 @@ pub fn coalesce_row(theme: &Theme, ov: &Overrides, row: &Row, screen_reverse: bo
             }
         }
     }
+    trim_blank_tail(&mut runs, theme.bg);
     runs
+}
+
+/// Cells past the last visible one paint nothing (the pane background already covers them), so
+/// they are dropped here instead of being laid out and drawn as trailing spaces on every frame.
+/// A trailing blank only counts as invisible with the default background and no underline or
+/// strike-through: anything else (a coloured bar, reverse video) still has to be painted.
+fn trim_blank_tail(runs: &mut Vec<Run>, default_bg: Rgb) {
+    const DECORATED: u16 = attr::ANY_UL | attr::STRIKE;
+    while let Some(last) = runs.last_mut() {
+        if last.bg != default_bg || last.flags & DECORATED != 0 {
+            return;
+        }
+        let kept = last.text.trim_end_matches(' ').len();
+        last.col1 -= last.text.len() - kept;
+        last.text.truncate(kept);
+        if !last.text.is_empty() {
+            return;
+        }
+        runs.pop();
+    }
 }
 
 /// Attributes shared by consecutive cells worth batching into one draw call.
