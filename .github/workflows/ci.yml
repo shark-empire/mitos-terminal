@@ -14,7 +14,7 @@
 #
 # add that as a step before "Setup Rust toolchain" in any job below if so.
 
-name: MITOS Terminal CI
+name: MITOS Terminal CI build
 
 on:
   push:
