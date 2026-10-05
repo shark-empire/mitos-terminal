@@ -15,6 +15,7 @@
 //!   widget anchors are keyed on.
 //! * colours are palette references, so a theme change recolours history.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -286,6 +287,9 @@ pub struct Term {
     theme_ansi: [Rgb; 16],
 
     parser: Option<Parser>,
+    /// Start of a UTF-8 sequence cut off by the end of one read, completed by the next one (see
+    /// `repair_utf8`).
+    utf8_tail: Vec<u8>,
     osc_state: OscGuard,
     osc_len: u32,
     events: Vec<TermEvent>,
@@ -365,6 +369,7 @@ impl Term {
             theme_cursor: [85, 255, 85],
             theme_ansi: crate::theme::Theme::dark().ansi,
             parser: Some(Parser::new()),
+            utf8_tail: Vec::new(),
             osc_state: OscGuard::Idle,
             osc_len: 0,
             events: Vec::new(),
@@ -400,7 +405,9 @@ impl Term {
 
     /// Feed bytes from the child. This is the hot path.
     pub fn process(&mut self, bytes: &[u8]) {
-        let mut parser = self.parser.take().unwrap_or_else(Parser::new);
+        let repaired = self.repair_utf8(bytes);
+        let bytes: &[u8] = &repaired;
+        let mut parser = self.parser.take().unwrap_or_default();
         self.now_ms = self.epoch.elapsed().as_millis().min(u32::MAX as u128) as u32;
         self.prune_fresh();
 
@@ -474,6 +481,46 @@ impl Term {
             self.seqno = self.seqno.wrapping_add(1);
             self.changed = false;
         }
+    }
+
+    /// Make the byte stream valid UTF-8 before the parser sees it.
+    ///
+    /// `vte` decodes UTF-8 itself but silently drops bytes that can never start a character
+    /// (0xC0, 0xC1, 0xF5..=0xFF) and stray continuation bytes, where a terminal should show
+    /// U+FFFD. A sequence cut off by the end of one read is held back in `utf8_tail` and completed
+    /// by the next read, so a character split across reads still arrives whole. Valid input (the
+    /// overwhelmingly common case) is passed through without copying.
+    fn repair_utf8<'a>(&mut self, bytes: &'a [u8]) -> Cow<'a, [u8]> {
+        if self.utf8_tail.is_empty() && std::str::from_utf8(bytes).is_ok() {
+            return Cow::Borrowed(bytes);
+        }
+        let mut input = std::mem::take(&mut self.utf8_tail);
+        input.extend_from_slice(bytes);
+        let mut out = Vec::with_capacity(input.len());
+        let mut rest: &[u8] = &input;
+        while !rest.is_empty() {
+            match std::str::from_utf8(rest) {
+                Ok(_) => {
+                    out.extend_from_slice(rest);
+                    break;
+                }
+                Err(e) => {
+                    let (valid, bad) = rest.split_at(e.valid_up_to());
+                    out.extend_from_slice(valid);
+                    match e.error_len() {
+                        Some(n) => {
+                            out.extend_from_slice("\u{fffd}".as_bytes());
+                            rest = &bad[n..];
+                        }
+                        None => {
+                            self.utf8_tail = bad.to_vec();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Cow::Owned(out)
     }
 
     pub fn take_events(&mut self) -> Vec<TermEvent> {

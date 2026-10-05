@@ -312,9 +312,8 @@ impl Perform for Term {
                 }
                 let uri_bytes = join_params(params, 2);
                 let uri = lossy(&uri_bytes);
-                if uri.is_empty() {
-                    self.cur_link = 0;
-                } else if !self.policy.hyperlinks
+                if uri.is_empty()
+                    || !self.policy.hyperlinks
                     || uri.len() > self.policy.max_uri
                     || uri.chars().any(|c| c.is_control())
                 {

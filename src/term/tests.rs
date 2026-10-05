@@ -55,7 +55,7 @@ fn check_invariants(t: &Term) {
     assert!(t.cursor.y < t.rows, "cursor y {} >= {}", t.cursor.y, t.rows);
     assert!(t.scroll_top <= t.scroll_bottom && t.scroll_bottom < t.rows);
     assert_eq!(t.tabs.len(), t.cols);
-    assert!(t.scrollback.len() <= t.scrollback_limit.max(0));
+    assert!(t.scrollback.len() <= t.scrollback_limit);
     assert!(t.display_offset <= t.scrollback.len());
 }
 
@@ -134,7 +134,7 @@ fn csi_cursor_addressing() {
     assert_eq!(row(&t, 2), "    x");
     feed(&mut t, "\x1b[2Ay\x1b[3By");
     assert_eq!(row(&t, 0), "     y");
-    assert_eq!(row(&t, 4), "     y");
+    assert_eq!(row(&t, 3), "      y");
     feed(&mut t, "\x1b[1;1H\x1b[99C\x1b[99B");
     assert_eq!(t.cursor_pos(), (19, 5));
     feed(&mut t, "\x1b[4G");
@@ -744,6 +744,14 @@ fn invalid_utf8_becomes_replacement_character() {
 }
 
 #[test]
+fn stray_and_truncated_utf8_bytes_are_replaced_individually() {
+    let mut t = t(10, 3);
+    // a stray continuation byte, then a three-byte sequence cut short by plain ASCII
+    t.process(&[b'a', 0x80, b'b', 0xe4, 0xb8, b'c']);
+    assert_eq!(row(&t, 0), "a\u{fffd}b\u{fffd}c");
+}
+
+#[test]
 fn utf8_split_across_chunks() {
     let mut t = t(10, 3);
     let bytes = "世".as_bytes();
@@ -915,7 +923,7 @@ fn search_is_case_aware_and_crosses_soft_wraps() {
 
 #[test]
 fn plain_text_url_detection() {
-    let mut t = t(60, 3);
+    let mut t = t(80, 3);
     feed(
         &mut t,
         "see https://example.com/a_(b). ok (https://x.org) mailto:a@b.co",

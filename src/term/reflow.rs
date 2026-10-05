@@ -138,7 +138,7 @@ fn reflow_primary(
     let sb_len = scrollback.len();
     let mut lines: Vec<Row> = Vec::with_capacity(sb_len + old_rows);
     lines.extend(scrollback.drain(..));
-    lines.extend(grid.drain(..));
+    lines.append(grid);
     let cursor_abs = sb_len + cursor.1.min(old_rows.saturating_sub(1));
 
     let mut out: Vec<Row> = Vec::with_capacity(lines.len());
