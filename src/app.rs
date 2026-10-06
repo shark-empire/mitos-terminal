@@ -1196,6 +1196,46 @@ impl eframe::App for TerminalApp {
                     }
                 }
 
+                // Draggable dividers between split panes. They are created after the panes, so
+                // they sit on top of the pane edges and win the hit test there.
+                let dividers = self.layout.active_tab().dividers(LRect::FULL);
+                for div in dividers {
+                    let node = ERect::from_min_max(
+                        Pos2::new(
+                            area.left() + div.area.x0 * area.width(),
+                            area.top() + div.area.y0 * area.height(),
+                        ),
+                        Pos2::new(
+                            area.left() + div.area.x1 * area.width(),
+                            area.top() + div.area.y1 * area.height(),
+                        ),
+                    );
+                    let (hit, line) = divider_rects(div.axis, node, div.ratio);
+                    let id = egui::Id::new(("divider", div.key));
+                    let resp = ui.interact(hit, id, Sense::drag());
+                    if resp.hovered() || resp.dragged() {
+                        let cursor = match div.axis {
+                            Axis::X => egui::CursorIcon::ResizeHorizontal,
+                            Axis::Y => egui::CursorIcon::ResizeVertical,
+                        };
+                        ctx.set_cursor_icon(cursor);
+                        ui.painter().rect_filled(
+                            line,
+                            0.0,
+                            Color32::from_rgba_unmultiplied(accent[0], accent[1], accent[2], 140),
+                        );
+                    }
+                    if resp.dragged() {
+                        if let Some(p) = resp.interact_pointer_pos() {
+                            let ratio = match div.axis {
+                                Axis::X => (p.x - node.left()) / node.width().max(1.0),
+                                Axis::Y => (p.y - node.top()) / node.height().max(1.0),
+                            };
+                            self.layout.set_ratio(div.key, ratio);
+                        }
+                    }
+                }
+
                 if any_animating || self.pending_paste.is_some() || self.pending_link.is_some() {
                     ctx.request_repaint();
                 } else {
@@ -1219,6 +1259,28 @@ impl eframe::App for TerminalApp {
             pane.session.shutdown();
         }
     }
+}
+
+/// Pixel rectangles of a split's divider inside the split's own area `node`: the grab strip the
+/// pointer can pick up, and the thin line drawn while it is hovered or dragged.
+fn divider_rects(axis: Axis, node: ERect, ratio: f32) -> (ERect, ERect) {
+    let strip = |half_width: f32| match axis {
+        Axis::X => {
+            let x = node.left() + node.width() * ratio;
+            ERect::from_min_max(
+                Pos2::new(x - half_width, node.top()),
+                Pos2::new(x + half_width, node.bottom()),
+            )
+        }
+        Axis::Y => {
+            let y = node.top() + node.height() * ratio;
+            ERect::from_min_max(
+                Pos2::new(node.left(), y - half_width),
+                Pos2::new(node.right(), y + half_width),
+            )
+        }
+    };
+    (strip(3.0), strip(1.0))
 }
 
 fn rects_len(layout: &Layout, pane: PaneId) -> usize {

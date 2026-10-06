@@ -53,6 +53,13 @@ impl Node {
             Node::Split { a, b, .. } => a.contains(id) || b.contains(id),
         }
     }
+
+    fn first_leaf(&self) -> PaneId {
+        match self {
+            Node::Leaf(id) => *id,
+            Node::Split { a, .. } => a.first_leaf(),
+        }
+    }
 }
 
 /// Normalised rectangle (0..1 on both axes); `render.rs` scales this to the
@@ -94,6 +101,19 @@ impl Rect {
 
 const MIN_RATIO: f32 = 0.05;
 const MAX_RATIO: f32 = 0.95;
+
+/// A divider between the two halves of a split, as the UI needs it to let the user drag it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Divider {
+    /// Names the split for `Layout::set_ratio`: the first pane on its trailing (right/bottom) side.
+    /// No two splits share one, so it stays valid while other dividers are being moved.
+    pub key: PaneId,
+    pub axis: Axis,
+    /// The whole area the split divides, normalised like the rects from `Tab::rects`.
+    pub area: Rect,
+    /// Where the divider sits, as a fraction of `area` along `axis`.
+    pub ratio: f32,
+}
 
 #[derive(Clone, Debug)]
 pub struct Tab {
@@ -149,6 +169,21 @@ impl Tab {
         out
     }
 
+    /// The draggable dividers of this tab's splits, outermost first (none while a pane is zoomed).
+    pub fn dividers(&self, area: Rect) -> Vec<Divider> {
+        let mut out = Vec::new();
+        if self.zoomed.is_none() {
+            collect_dividers(&self.root, area, &mut out);
+        }
+        out
+    }
+
+    /// Move the divider named by `key` (see `Divider::key`) to `ratio`, clamped to a usable range.
+    /// Returns `false` if the tab has no such divider.
+    pub fn set_ratio(&mut self, key: PaneId, ratio: f32) -> bool {
+        set_split_ratio(&mut self.root, key, ratio)
+    }
+
     fn rect_of(&self, id: PaneId) -> Option<Rect> {
         self.rects(Rect::FULL)
             .into_iter()
@@ -164,6 +199,34 @@ fn layout_rects(node: &Node, area: Rect, out: &mut Vec<(PaneId, Rect)>) {
             let (ra, rb) = area.split(*axis, *ratio);
             layout_rects(a, ra, out);
             layout_rects(b, rb, out);
+        }
+    }
+}
+
+fn collect_dividers(node: &Node, area: Rect, out: &mut Vec<Divider>) {
+    if let Node::Split { axis, ratio, a, b } = node {
+        out.push(Divider {
+            key: b.first_leaf(),
+            axis: *axis,
+            area,
+            ratio: clamp_ratio(*ratio),
+        });
+        let (ra, rb) = area.split(*axis, *ratio);
+        collect_dividers(a, ra, out);
+        collect_dividers(b, rb, out);
+    }
+}
+
+fn set_split_ratio(node: &mut Node, key: PaneId, new_ratio: f32) -> bool {
+    match node {
+        Node::Leaf(_) => false,
+        Node::Split { ratio, a, b, .. } => {
+            if b.first_leaf() == key {
+                *ratio = clamp_ratio(new_ratio);
+                true
+            } else {
+                set_split_ratio(a, key, new_ratio) || set_split_ratio(b, key, new_ratio)
+            }
         }
     }
 }
@@ -351,6 +414,11 @@ impl Layout {
         }
     }
 
+    /// Drag the divider `key` (see `Divider::key`) of the active tab to `ratio`.
+    pub fn set_ratio(&mut self, key: PaneId, ratio: f32) -> bool {
+        self.active_tab_mut().set_ratio(key, ratio)
+    }
+
     pub fn focus(&mut self, pane: PaneId) {
         self.active_tab_mut().focus(pane);
     }
@@ -412,6 +480,32 @@ pub fn clamp_ratio(r: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dividers_can_be_listed_and_dragged() {
+        let mut l = Layout::new(1);
+        l.split(Axis::X, 2);
+        l.focus(2);
+        l.split(Axis::Y, 3);
+        let divs = l.active_tab().dividers(Rect::FULL);
+        assert_eq!(divs.len(), 2);
+        let outer = divs.iter().find(|d| d.axis == Axis::X).unwrap();
+        assert_eq!((outer.key, outer.ratio), (2, 0.5));
+        let inner = divs.iter().find(|d| d.axis == Axis::Y).unwrap();
+        assert_eq!((inner.key, inner.area.x0), (3, 0.5));
+
+        assert!(l.set_ratio(2, 0.25));
+        let rects = l.active_tab().rects(Rect::FULL);
+        let first = rects.iter().find(|(p, _)| *p == 1).unwrap().1;
+        assert_eq!(first.x1, 0.25);
+
+        assert!(l.set_ratio(2, 9.0));
+        assert_eq!(l.active_tab().dividers(Rect::FULL)[0].ratio, 0.95);
+        assert!(!l.set_ratio(99, 0.5));
+
+        l.toggle_zoom();
+        assert!(l.active_tab().dividers(Rect::FULL).is_empty());
+    }
 
     #[test]
     fn new_layout_has_one_tab_one_pane() {
