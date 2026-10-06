@@ -31,7 +31,7 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | Feature | Status | Where |
 |---|---|---|
 | Tabs | ✅ | `layout.rs::Layout` (tabs) |
-| Split panes | ✅ | `layout.rs::Node` (binary tree, X/Y axis) |
+| Split panes | ✅ | `layout.rs::Node` (binary tree, X/Y axis); the dividers can be dragged with the mouse (`Layout::set_ratio`, `app.rs`) |
 | Windows | ✅ | `Action::NewWindow` re-execs the binary; each OS window is a separate process |
 | Searchable scrollback | ✅ | `Term::search`, `Ctrl+F` |
 | Copy/paste, selection | ✅ | simple/word/line/block selection (`term/select.rs`), paste sanitising (`security.rs`) |
@@ -118,7 +118,6 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
   `middle_click_paste`) works *within* this app (select in one pane,
   middle-click in another) but doesn't publish to X11's real PRIMARY
   selection, so a *different* application's middle-click paste won't see it.
-- **Split-pane dividers** aren't draggable yet; new splits are always 50/50.
 - **`--tty` recovery mode**: this is an `eframe`/OpenGL GUI application: it
   cannot run on a display-less virtual console. A real recovery path would
   be a separate, text-mode-only binary, not a flag on this one.
