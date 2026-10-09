@@ -643,6 +643,39 @@ fn mitos_execution_blocks() {
 }
 
 #[test]
+fn widget_commands_carry_the_widgets_trust() {
+    let mut t = t(40, 6);
+    let w = |cmd: &str| RichWidget::Button {
+        label: "Go".to_string(),
+        cmd: cmd.to_string(),
+    };
+    assert!(t.inject_widget(w("a"), true));
+    assert!(t.inject_widget(w("b"), false));
+    let trusted_id = t.widgets()[0].id;
+    let untrusted_id = t.widgets()[1].id;
+    t.take_events();
+    t.queue_widget_command(trusted_id, "a".to_string());
+    t.queue_widget_command(untrusted_id, "b".to_string());
+    t.queue_widget_command(u64::MAX, "gone".to_string());
+    let flags: Vec<(String, bool)> = t
+        .take_events()
+        .into_iter()
+        .filter_map(|e| match e {
+            TermEvent::WidgetCommand {
+                command,
+                trusted,
+                ..
+            } => Some((command, trusted)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flags.len(), 3);
+    assert_eq!(flags[0], ("a".to_string(), true));
+    assert_eq!(flags[1], ("b".to_string(), false));
+    assert_eq!(flags[2], ("gone".to_string(), false));
+}
+
+#[test]
 fn widgets_are_anchored_and_policy_gated() {
     let mut t = t(40, 6);
     let w = || RichWidget::Button {

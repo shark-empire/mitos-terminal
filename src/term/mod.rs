@@ -112,11 +112,14 @@ pub enum TermEvent {
     AutocompleteRequest(String),
     /// Palette / default colours were changed by the application.
     ColorsChanged,
-    /// A MROP widget's button was clicked (already policy/sanitize-checked);
-    /// the session layer writes `command + "\n"` to the child.
+    /// A MROP widget's button was clicked (already policy/sanitize-checked).
+    /// `trusted` copies `Widget::trusted`: the app layer asks the user before
+    /// writing `command + "\n"` to the child unless the widget is trusted or the
+    /// command matches one of the `mrop_trusted_prefixes`.
     WidgetCommand {
         id: u64,
         command: String,
+        trusted: bool,
     },
 }
 
@@ -885,7 +888,13 @@ impl Term {
 
     /// Called by the renderer when a widget's button is clicked.
     pub fn queue_widget_command(&mut self, id: u64, command: String) {
-        self.events.push(TermEvent::WidgetCommand { id, command });
+        // A widget that has meanwhile been removed counts as untrusted.
+        let trusted = self.widgets.iter().any(|w| w.id == id && w.trusted);
+        self.events.push(TermEvent::WidgetCommand {
+            id,
+            command,
+            trusted,
+        });
     }
 
     // ----- fx (phosphor glow) --------------------------------------------
