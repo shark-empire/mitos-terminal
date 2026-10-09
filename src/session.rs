@@ -37,8 +37,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 pub enum SessionState {
     Running,
     Exited(ExitInfo),
-    /// The screen model panicked and was isolated; the pane shows the crash
-    /// banner in `render.rs` instead of feeding it more bytes.
+    /// The screen model panicked and was isolated: the shell is stopped, no more
+    /// bytes are fed to the model, and `app.rs` draws a banner over the pane.
     Crashed(String),
     /// The PTY itself could not be created (bad shell, out of ptys, …).
     SpawnFailed(String),
@@ -110,13 +110,26 @@ impl Session {
                     std::thread::Builder::new()
                         .name(format!("mitos-term-r{id}"))
                         .spawn(move || {
-                            reader_loop(reader, &term, &ctx);
+                            let crash = reader_loop(reader, &term, &ctx);
+                            if crash.is_some() {
+                                // Nothing drains the pty any more and the screen model is in an
+                                // unknown state: stop the shell, otherwise it would keep running
+                                // behind a frozen pane and the `wait` below would never return.
+                                if let Some(pid) = pid {
+                                    pty::signal_pid(pid, pty::SIGKILL);
+                                }
+                            }
                             let exit = child.wait().ok().map(|s| ExitInfo {
                                 code: s.exit_code() as i32,
                             });
                             let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
                             if matches!(*st, SessionState::Running) {
-                                *st = SessionState::Exited(exit.unwrap_or(ExitInfo { code: 0 }));
+                                *st = match crash {
+                                    Some(why) => SessionState::Crashed(why),
+                                    None => {
+                                        SessionState::Exited(exit.unwrap_or(ExitInfo { code: 0 }))
+                                    }
+                                };
                             }
                             drop(st);
                             reader_done.store(true, Ordering::Release);
@@ -267,7 +280,13 @@ impl Drop for Session {
 
 /// Read until EOF/error, feeding every chunk to `Term::process` behind a
 /// panic boundary. See the module doc for why this cannot poison the mutex.
-fn reader_loop(mut reader: Box<dyn Read + Send>, term: &Arc<Mutex<Term>>, ctx: &egui::Context) {
+/// Returns the panic message when the screen model panicked (reading stops and
+/// the session is isolated), `None` on a normal end of output.
+fn reader_loop(
+    mut reader: Box<dyn Read + Send>,
+    term: &Arc<Mutex<Term>>,
+    ctx: &egui::Context,
+) -> Option<String> {
     let mut buf = [0u8; 65536];
     loop {
         let n = match reader.read(&mut buf) {
@@ -282,13 +301,25 @@ fn reader_loop(mut reader: Box<dyn Read + Send>, term: &Arc<Mutex<Term>>, ctx: &
                 Ok(g) => g,
                 Err(p) => p.into_inner(),
             };
-            std::panic::catch_unwind(AssertUnwindSafe(|| guard.process(chunk))).is_err()
+            std::panic::catch_unwind(AssertUnwindSafe(|| guard.process(chunk))).err()
         };
-        if panicked {
+        if let Some(payload) = panicked {
             eprintln!("[mitos-terminal] the screen model panicked on incoming output; this session is now isolated");
-            break;
+            return Some(panic_message(payload));
         }
         ctx.request_repaint();
+    }
+    None
+}
+
+/// The text of a panic payload (`panic!("literal")` carries a `&str`, a formatted one a `String`).
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -419,5 +450,19 @@ mod tests {
         s.shutdown();
         s.write(b"still here?\n".to_vec());
         assert!(wait_until(|| !s.is_running(), Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn panic_message_reads_both_payload_kinds() {
+        let literal = std::panic::catch_unwind(|| {
+            panic!("static text");
+        })
+        .unwrap_err();
+        assert_eq!(panic_message(literal), "static text");
+        let formatted = std::panic::catch_unwind(|| {
+            panic!("{}", String::from("owned text"));
+        })
+        .unwrap_err();
+        assert_eq!(panic_message(formatted), "owned text");
     }
 }

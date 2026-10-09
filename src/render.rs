@@ -846,7 +846,11 @@ fn paint_widget_view(
             ui.set_min_width(rect.width().max(1.0));
             ui.horizontal(|ui| match view {
                 WidgetView::Button { label, cmd } => {
-                    if ui.button(label.as_str()).clicked() {
+                    if ui
+                        .button(label.as_str())
+                        .on_hover_text(cmd.as_str())
+                        .clicked()
+                    {
                         if let Some(clean) = crate::security::sanitize_command(cmd) {
                             *clicked_cmd.borrow_mut() = Some(clean);
                         }

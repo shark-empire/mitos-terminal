@@ -48,6 +48,12 @@ struct PendingLink {
     reason: String,
 }
 
+/// A widget button's command waiting for the user's go-ahead (see `show_widget_confirm`).
+struct PendingWidget {
+    pane: PaneId,
+    command: String,
+}
+
 /// What has to survive from one frame to the next to report the pointer to a program: which
 /// buttons it is holding down, and the cell it was last reported in (so motion is only sent when
 /// the pointer really moves to another cell).
@@ -191,6 +197,10 @@ pub struct TerminalApp {
     pending_paste: Option<PendingPaste>,
     pending_link: Option<PendingLink>,
     pending_close: Option<PaneId>,
+    pending_widget: Option<PendingWidget>,
+    /// The cursor style last pushed into every pane's `Term` as its default (see
+    /// `sync_cursor_default_to_panes`).
+    cursor_default: crate::term::CursorStyle,
     startup_errors: Vec<String>,
     frame_count: u64,
     fullscreen: bool,
@@ -238,6 +248,8 @@ fn new_pane(
     let resolved = config.theme(home);
     if let Ok(mut t) = session.term().lock() {
         t.set_theme_colors(resolved.fg, resolved.bg, resolved.cursor, resolved.ansi);
+        // The configured cursor shape/blink is the pane's default (DECSCUSR 0 returns to it).
+        t.set_default_cursor_style(config.cursor.style());
     }
     let rain = if config.rain_enabled(home) {
         Some(fx::CodeRain::new(10.0, 0.55))
@@ -288,6 +300,7 @@ impl TerminalApp {
 
         let config_dirty = Arc::new(AtomicBool::new(false));
         let watcher = spawn_config_watcher(Arc::clone(&config_dirty), cc.egui_ctx.clone());
+        let cursor_default = config.cursor.style();
 
         TerminalApp {
             config,
@@ -317,6 +330,8 @@ impl TerminalApp {
             pending_paste: None,
             pending_link: None,
             pending_close: None,
+            pending_widget: None,
+            cursor_default,
             startup_errors,
             frame_count: 0,
             fullscreen: false,
@@ -340,6 +355,7 @@ impl TerminalApp {
         self.config = config;
         self.theme = self.config.theme(&self.home);
         self.sync_theme_colors_to_panes();
+        self.sync_cursor_default_to_panes();
         self.keymap = keymap;
         self.font = render::font_id(&self.config.font.family, self.config.font.size);
         self.metrics = render::measure(ctx, &self.font);
@@ -385,6 +401,22 @@ impl TerminalApp {
         }
     }
 
+    /// Make the configured cursor shape/blink the default of every live pane (`new_pane` does
+    /// this at creation). Only acts when the setting changed, so saving an unrelated setting
+    /// never overrides a style that a program picked with DECSCUSR.
+    fn sync_cursor_default_to_panes(&mut self) {
+        let want = self.config.cursor.style();
+        if want == self.cursor_default {
+            return;
+        }
+        self.cursor_default = want;
+        for pane in self.panes.values() {
+            if let Ok(mut t) = pane.session.term().lock() {
+                t.set_default_cursor_style(want);
+            }
+        }
+    }
+
     fn set_zoom(&mut self, delta: f32, ctx: &egui::Context) {
         let new_size = (self.metrics_font_size + delta).clamp(config::MIN_FONT, config::MAX_FONT);
         if (new_size - self.metrics_font_size).abs() > 0.01 {
@@ -426,7 +458,7 @@ impl TerminalApp {
         self.registry.set_active(self.layout.focused_pane());
     }
 
-    fn close_pane(&mut self, pane_id: PaneId) {
+    fn close_pane(&mut self, ctx: &egui::Context, pane_id: PaneId) {
         self.layout.close_pane(pane_id);
         if let Some(mut p) = self.panes.remove(&pane_id) {
             p.session.shutdown();
@@ -438,8 +470,31 @@ impl TerminalApp {
             let id = self.next_pane_id;
             self.next_pane_id += 1;
             self.layout = Layout::new(id);
+            let pane = new_pane(ctx, &self.config, &self.home, 80, 24, None, None);
+            self.registry.add(id, pane.session.term());
+            self.panes.insert(id, pane);
         }
         self.registry.set_active(self.layout.focused_pane());
+    }
+
+    /// `true` for a pane whose shell has ended and that `[general] on_exit = "close"` says to
+    /// remove. A shell that failed to start or crashed is never closed (the pane explains what
+    /// happened), and neither is one that died within two seconds of starting with a failure
+    /// status: that is almost always a broken shell or rc file, and closing it would make the
+    /// window vanish without a word.
+    fn exited_pane_should_close(&self, id: PaneId) -> bool {
+        if self.config.general.on_exit != "close" {
+            return false;
+        }
+        let Some(pane) = self.panes.get(&id) else {
+            return false;
+        };
+        match pane.session.state() {
+            SessionState::Exited(info) => {
+                info.code == 0 || pane.session.uptime() >= std::time::Duration::from_secs(2)
+            }
+            _ => false,
+        }
     }
 
     fn request_close_pane(&mut self, ctx: &egui::Context, pane_id: PaneId) {
@@ -451,9 +506,8 @@ impl TerminalApp {
         if self.config.general.confirm_close_running && running_job {
             self.pending_close = Some(pane_id);
         } else {
-            self.close_pane(pane_id);
+            self.close_pane(ctx, pane_id);
         }
-        let _ = ctx;
     }
 
     fn dispatch_action(&mut self, ctx: &egui::Context, action: Action) {
@@ -702,8 +756,23 @@ impl TerminalApp {
                         crate::ipc::request_autocomplete(p.session.term(), ctx.clone(), partial);
                     }
                 }
-                TermEvent::WidgetCommand { command, .. } => {
-                    if let Some(p) = self.panes.get(&id) {
+                TermEvent::WidgetCommand {
+                    command,
+                    trusted,
+                    ..
+                } => {
+                    // A button a *program* drew can carry any command while showing only its
+                    // label, so ask first (and show the real command) unless the widget is
+                    // trusted or the command matches the user's allow-list.
+                    let ask = self.config.security.mrop_confirm
+                        && !trusted
+                        && !security::is_trusted_command(
+                            &command,
+                            &self.config.security.mrop_trusted_prefixes,
+                        );
+                    if ask {
+                        self.pending_widget = Some(PendingWidget { pane: id, command });
+                    } else if let Some(p) = self.panes.get(&id) {
                         p.session.write(format!("{command}\n").into_bytes());
                     }
                 }
@@ -745,9 +814,18 @@ impl TerminalApp {
             if let Some(pane) = self.panes.get_mut(&id) {
                 if !pane.notified_finish {
                     pane.notified_finish = true;
-                    if let SessionState::Exited(info) = pane.session.state() {
-                        self.announce
-                            .push(format!("Shell {}", info.describe()), false);
+                    let message = match pane.session.state() {
+                        SessionState::Running => None,
+                        SessionState::Exited(info) => Some(format!("Shell {}", info.describe())),
+                        SessionState::Crashed(_) => {
+                            Some("Terminal crashed; the shell was stopped".to_string())
+                        }
+                        SessionState::SpawnFailed(why) => {
+                            Some(format!("Could not start the shell: {why}"))
+                        }
+                    };
+                    if let Some(message) = message {
+                        self.announce.push(message, false);
                     }
                 }
             }
@@ -958,6 +1036,7 @@ impl eframe::App for TerminalApp {
         self.show_paste_confirm(ctx);
         self.show_link_confirm(ctx);
         self.show_close_confirm(ctx);
+        self.show_widget_confirm(ctx);
 
         if self.search_active {
             egui::TopBottomPanel::top("search_bar").show(ctx, |ui| {
@@ -1050,6 +1129,7 @@ impl eframe::App for TerminalApp {
         // ----- central panel: the pane grid --------------------------------
         let bg = self.theme.bg;
         let panel_alpha = (self.config.effective_opacity() * 255.0) as u8;
+        let mut auto_close: Vec<PaneId> = Vec::new();
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(Color32::from_rgba_unmultiplied(
                 bg[0],
@@ -1106,6 +1186,9 @@ impl eframe::App for TerminalApp {
                     }
 
                     self.drain_pane_events(ctx, now, pane_id);
+                    if self.exited_pane_should_close(pane_id) {
+                        auto_close.push(pane_id);
+                    }
                     if self.tick_pane(now, dt, pane_id) {
                         any_animating = true;
                     }
@@ -1183,6 +1266,16 @@ impl eframe::App for TerminalApp {
                         };
                     }
 
+                    let banner = self
+                        .panes
+                        .get(&pane_id)
+                        .and_then(|p| session_banner(&p.session.state()));
+                    if let Some((text, is_error)) = banner {
+                        if !auto_close.contains(&pane_id) {
+                            paint_session_banner(ui, px, &text, is_error, &theme_colors);
+                        }
+                    }
+
                     if rects_len(&self.layout, pane_id) > 1 {
                         let b = theme_colors.border;
                         ui.painter().rect_stroke(
@@ -1243,6 +1336,16 @@ impl eframe::App for TerminalApp {
                 }
             });
 
+        for id in auto_close {
+            if self.layout.all_panes().len() <= 1 {
+                // The last shell of the last tab ended: closing the window is what every
+                // terminal does, and respawning here could loop forever on a broken shell.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                self.close_pane(ctx, id);
+            }
+        }
+
         for a in self.announce.drain() {
             let speak_on = self.config.accessibility.speak_output && self.speech_on;
             crate::a11y::speak(&a.text, speak_on, a.urgent);
@@ -1281,6 +1384,47 @@ fn divider_rects(axis: Axis, node: ERect, ratio: f32) -> (ERect, ERect) {
         }
     };
     (strip(3.0), strip(1.0))
+}
+
+/// Text and severity of the strip drawn over a pane whose session is no longer running, or
+/// `None` while it is.
+fn session_banner(state: &SessionState) -> Option<(String, bool)> {
+    match state {
+        SessionState::Running => None,
+        SessionState::Exited(info) => {
+            let what = info.describe();
+            let text = format!("Shell {what} \u{2014} close this pane to dismiss it");
+            Some((text, info.code != 0))
+        }
+        SessionState::Crashed(why) => {
+            let text = format!("The terminal crashed and its shell was stopped: {why}");
+            Some((text, true))
+        }
+        SessionState::SpawnFailed(why) => {
+            let text = format!("Could not start the shell: {why}");
+            Some((text, true))
+        }
+    }
+}
+
+/// Draws `text` on a one-line strip along the bottom edge of `pane`, tinted red for errors.
+fn paint_session_banner(ui: &egui::Ui, pane: ERect, text: &str, error: bool, theme: &Theme) {
+    let height = 26.0_f32.min(pane.height());
+    let strip = ERect::from_min_max(Pos2::new(pane.left(), pane.bottom() - height), pane.max);
+    let base = if error {
+        theme::mix(theme.surface, [200, 60, 60], 0.5)
+    } else {
+        theme.surface
+    };
+    let painter = ui.painter_at(pane);
+    painter.rect_filled(strip, 0.0, Color32::from_rgb(base[0], base[1], base[2]));
+    painter.text(
+        Pos2::new(strip.left() + 10.0, strip.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        egui::FontId::proportional(13.0),
+        Color32::from_rgb(theme.fg[0], theme.fg[1], theme.fg[2]),
+    );
 }
 
 fn rects_len(layout: &Layout, pane: PaneId) -> usize {
@@ -1879,6 +2023,7 @@ impl TerminalApp {
             let _ = self.config.save();
             self.theme = self.config.theme(&self.home);
             self.sync_theme_colors_to_panes();
+            self.sync_cursor_default_to_panes();
             self.font = render::font_id(&self.config.font.family, self.config.font.size);
             self.metrics = render::measure(ctx, &self.font);
             self.metrics_font_size = self.config.font.size;
@@ -2008,6 +2153,42 @@ impl TerminalApp {
         }
     }
 
+    fn show_widget_confirm(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.pending_widget else {
+            return;
+        };
+        let mut go = false;
+        let mut cancel = false;
+        egui::Window::new("Run command?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("A button drawn by a program in this pane wants to run:");
+                let command = egui::RichText::new(pending.command.as_str()).monospace();
+                ui.add(egui::Label::new(command).wrap());
+                ui.label("It will be typed into the pane and executed.");
+                ui.horizontal(|ui| {
+                    if ui.button("Run").clicked() {
+                        go = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if go || cancel {
+            if let Some(pending) = self.pending_widget.take() {
+                if go {
+                    if let Some(p) = self.panes.get(&pending.pane) {
+                        let line = format!("{}\n", pending.command);
+                        p.session.write(line.into_bytes());
+                    }
+                }
+            }
+        }
+    }
+
     fn show_close_confirm(&mut self, ctx: &egui::Context) {
         let Some(pane_id) = self.pending_close else {
             return;
@@ -2036,7 +2217,7 @@ impl TerminalApp {
             });
         if go {
             self.pending_close = None;
-            self.close_pane(pane_id);
+            self.close_pane(ctx, pane_id);
         } else if cancel {
             self.pending_close = None;
         }
