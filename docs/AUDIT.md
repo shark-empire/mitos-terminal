@@ -10,13 +10,13 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | PTY create/manage/resize | ✅ | `pty.rs` (`spawn`, `resize`), `session.rs` |
 | stdin/stdout/stderr streaming | ✅ | `session.rs` reader/writer threads (stderr is merged into the PTY, as it is for every real terminal) |
 | Pseudo-terminal resize | ✅ | `pty::resize`, `Session::resize`, `Term::resize` (full reflow) |
-| Process lifecycle tracking | ✅ | `session::SessionState`, `pty::ExitInfo` |
+| Process lifecycle tracking | ✅ | `session::SessionState`, `pty::ExitInfo`. `[general] on_exit = "close"` closes the pane when its shell ends (the window, for the last pane); `"hold"`, a failed spawn, a crash, or a failing shell that died within 2 s keep the pane and draw a status banner (`app.rs::exited_pane_should_close`, `session_banner`) |
 | Foreground/background process handling | ✅ | `pty::foreground_pgid/has_foreground_job/foreground_name` via `/proc` |
-| SIGINT/SIGTERM/SIGHUP/SIGKILL | ✅ | `pty::signal_foreground/signal_group/signal_pid`, `Session::sigint/sigterm/sigkill/shutdown` |
+| SIGINT/SIGTERM/SIGHUP/SIGKILL | ✅ | `pty::signal_foreground/signal_group/signal_pid`, `Session::sigint/sigterm/sigkill/shutdown`. Closing a pane sends SIGHUP; Ctrl+C reaches the program as a byte; `sigint/sigterm/sigkill` are not bound to any UI action |
 | UTF-8 | ✅ | `vte` + `term/tests.rs` (split-across-chunks, invalid-byte tests) |
 | ANSI/VT escape sequences | ✅ | `term/perform.rs` (C0/ESC/CSI/OSC), `term/tests.rs` |
 | Colors, 256/true-color | ✅ | `term/perform.rs::sgr`, `theme.rs` |
-| Cursor styles | ✅ | DECSCUSR, `config::CursorCfg`, `render::paint_cursor` |
+| Cursor styles | ✅ | DECSCUSR, `config::CursorCfg` (applied as each pane's default by `app.rs::sync_cursor_default_to_panes`), `render::paint_cursor` |
 | Alternate screen | ✅ | `term/ops.rs::enter_alt/leave_alt`, own scrollback rules |
 | Scrollback | ✅ | capped `VecDeque<Row>`, `config::ScrollCfg` |
 | Hyperlinks | ✅ | OSC 8 + plain-URL detection (`term/select.rs`), policy-gated open (`security.rs`) |
@@ -55,8 +55,8 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | Efficient text grid | ✅ | run-coalesced painting, one draw call per same-attribute span (`render::coalesce_row`, unit-tested) |
 | GPU acceleration where practical | ✅ | via egui/eframe's own GPU-backed tessellator; see Limitations for what that means concretely |
 | Glyph atlas, font cache | ✅ | egui's own `Fonts` (one atlas texture, cached across frames) |
-| Damage tracking | ✅ | `Term::take_damage` (per-row dirty), idle panes stop requesting repaints (`ctx.request_repaint_after`) |
-| Smooth scrolling | ✅ | `general.smooth_scroll` + wheel-based `Term::scroll_display` |
+| Damage tracking | ⚠️ | idle panes stop requesting repaints (`ctx.request_repaint_after`); the per-row dirty set (`Term::take_damage`) is maintained but the renderer repaints every row, so it is not used yet |
+| Smooth scrolling | ⚠️ | wheel-based `Term::scroll_display`, whole lines per notch; `general.smooth_scroll` is not read yet |
 | Cursor rendering | ✅ | block/underline/bar, blink, hollow-when-unfocused |
 | Selection rendering | ✅ | `render::paint_pane` |
 | Fallback renderer | ✅ | `main.rs` retries once with `LIBGL_ALWAYS_SOFTWARE=1` if hardware init fails |
@@ -72,13 +72,14 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | Application permission boundaries | ✅ | `term::Policy` (title/clipboard/notifications/widgets/cwd/hyperlinks/colors, all per-terminal.toml) |
 | Secure clipboard behavior | ✅ | OSC 52 **write** only — a read request (`?`) is never answered (`term/tests.rs::osc52_write_allowed_read_denied`) |
 | Resource limits | ✅ | scrollback cap, link/cluster/widget/command-history table caps, IPC client cap (8) + 60s idle timeout, paste size cap |
-| Crash isolation | ✅ | `session::reader_loop` runs `Term::process` inside `catch_unwind` without poisoning the mutex (`session.rs` test proves the technique) |
+| Crash isolation | ✅ | `session::reader_loop` runs `Term::process` inside `catch_unwind` without poisoning the mutex. If it ever panics, reading stops, the shell is killed, the state becomes `SessionState::Crashed` and `app.rs` draws a banner over the pane (the panic path itself cannot be triggered from outside — `Term` is fuzz-tested not to panic — so only the message helper is unit-tested) |
+| Click-to-run confirmation | ✅ | a widget button drawn by a *program* asks first, showing the real command, unless the widget is trusted or the command matches `mrop_trusted_prefixes` (any shell metacharacter disqualifies a prefix match); `[security] mrop_confirm = false` turns the prompt off (`app.rs::show_widget_confirm`, `security::is_trusted_command`) |
 
 ## Accessibility
 | Feature | Status | Where |
 |---|---|---|
 | Scalable text | ✅ | font-size zoom, no hardcoded pixel sizes |
-| High contrast | ✅ | two built-in high-contrast themes + `min_contrast` enforcement (`a11y::enforce_min_contrast`) |
+| High contrast | ⚠️ | two built-in high-contrast themes; the `accessibility.min_contrast` setting (`a11y::enforce_min_contrast`) is not applied yet |
 | Screen-reader compatibility | ✅ | a real, transparent `egui::Label` carrying the visible screen text sits over the painted grid, so it gets a normal accessibility node for free from whatever AT backend egui/eframe is built with — see Limitations for the precise scope of "for free" |
 | Keyboard navigation | ✅ | every dialog/palette/tab uses real focusable egui widgets |
 | Reduced motion | ✅ | `accessibility.reduced_motion` (+ `$MITOS_REDUCED_MOTION`) disables cursor blink and all fx animation |
@@ -126,6 +127,10 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
   `egui::Label` (which AccessKit picks up automatically when present) rather
   than hand-building a platform accessibility tree, but does not itself
   control whether that backend is compiled into this build of `eframe`.
+
+## Settings that parse but are not read yet
+These keys are accepted, saved and round-tripped by `config.rs`, but nothing consumes them, so changing them has no effect today:
+`general.smooth_scroll`, `general.scroll_on_output`, `accessibility.min_contrast`, `accessibility.screen_reader`, `accessibility.announce_bell`, `font.bold_is_bright` (bold is always brightened), `font.line_height`, `font.fallbacks`, `links.detect_plain_urls` (detection is always on), `bell.min_interval_ms`, `effects.max_fps`, `effects.pause_unfocused`, `effects.glitch`, and a profile's `font_size`.
 
 ## Theme Engine
 
