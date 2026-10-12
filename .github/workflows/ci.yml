@@ -1,4 +1,4 @@
-# MITOS Terminal — CI
+# MITOS Terminal  CI
 #
 # Every check runs as its own job so failures are independent and legible
 # (a clippy nit never hides a test failure). `ci` at the bottom depends on
