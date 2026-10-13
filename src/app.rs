@@ -35,6 +35,8 @@ use crate::theme::{self, Rgb, StatusStyle, TabStyle, Theme};
 
 const MIN_COLS: usize = 4;
 const MIN_ROWS: usize = 2;
+/// How long the visual bell tints a pane.
+const BELL_FLASH_SECS: f32 = 0.18;
 
 struct PendingPaste {
     pane: PaneId,
@@ -201,6 +203,11 @@ pub struct TerminalApp {
     /// The cursor style last pushed into every pane's `Term` as its default (see
     /// `sync_cursor_default_to_panes`).
     cursor_default: crate::term::CursorStyle,
+    /// Fractional wheel lines carried from one frame to the next (see `wheel_lines`).
+    wheel_residual: f32,
+    /// When the bell last rang, and in which pane (for the visual bell and its rate limit).
+    last_bell: f64,
+    bell_flash: Option<(PaneId, f64)>,
     startup_errors: Vec<String>,
     frame_count: u64,
     fullscreen: bool,
@@ -283,7 +290,7 @@ impl TerminalApp {
         startup_errors.extend(keymap_problems);
 
         let font = render::font_id(&config.font.family, config.font.size);
-        let metrics = render::measure(&cc.egui_ctx, &font);
+        let metrics = render::measure(&cc.egui_ctx, &font, config.font.line_height);
         let metrics_font_size = config.font.size;
 
         let first = new_pane(&cc.egui_ctx, &config, &home, 80, 24, None, None);
@@ -332,6 +339,9 @@ impl TerminalApp {
             pending_close: None,
             pending_widget: None,
             cursor_default,
+            wheel_residual: 0.0,
+            last_bell: f64::NEG_INFINITY,
+            bell_flash: None,
             startup_errors,
             frame_count: 0,
             fullscreen: false,
@@ -358,7 +368,7 @@ impl TerminalApp {
         self.sync_cursor_default_to_panes();
         self.keymap = keymap;
         self.font = render::font_id(&self.config.font.family, self.config.font.size);
-        self.metrics = render::measure(ctx, &self.font);
+        self.metrics = render::measure(ctx, &self.font, self.config.font.line_height);
         self.metrics_font_size = self.config.font.size;
         self.registry
             .set_allow_buffer_read(self.config.security.ipc_buffer_read);
@@ -422,7 +432,7 @@ impl TerminalApp {
         if (new_size - self.metrics_font_size).abs() > 0.01 {
             self.metrics_font_size = new_size;
             self.font = render::font_id(&self.config.font.family, new_size);
-            self.metrics = render::measure(ctx, &self.font);
+            self.metrics = render::measure(ctx, &self.font, self.config.font.line_height);
         }
     }
 
@@ -699,6 +709,17 @@ impl TerminalApp {
         true
     }
 
+    /// Rate limit for the bell (`[bell] min_interval_ms`): a program that rings it in a loop
+    /// must not turn into a stream of sounds, announcements and attention requests.
+    fn bell_allowed(&mut self, now: f64) -> bool {
+        let gap = self.config.bell.min_interval_ms as f64 / 1000.0;
+        if now - self.last_bell < gap {
+            return false;
+        }
+        self.last_bell = now;
+        true
+    }
+
     fn drain_pane_events(&mut self, ctx: &egui::Context, now: f64, id: PaneId) {
         let (events, exited_now) = {
             let pane = match self.panes.get(&id) {
@@ -729,14 +750,24 @@ impl TerminalApp {
                     }
                 }
                 TermEvent::Bell => {
-                    if self.config.bell.visual {
-                        self.announce.push("Bell", false);
-                    }
-                    if self.config.bell.audible {
-                        crate::a11y::ring_bell();
-                    }
-                    if self.config.bell.urgent {
-                        crate::platform::request_urgent("MITOS Terminal");
+                    if self.bell_allowed(now) {
+                        // At most ~2.5 flashes a second, whatever `min_interval_ms` says.
+                        let flash_ok = match self.bell_flash {
+                            Some((_, started)) => now - started >= 0.4,
+                            None => true,
+                        };
+                        if self.config.bell.visual && flash_ok {
+                            self.bell_flash = Some((id, now));
+                        }
+                        if self.config.accessibility.announce_bell {
+                            self.announce.push("Bell", false);
+                        }
+                        if self.config.bell.audible {
+                            crate::a11y::ring_bell();
+                        }
+                        if self.config.bell.urgent {
+                            crate::platform::request_urgent("MITOS Terminal");
+                        }
                     }
                 }
                 TermEvent::Notify { title, body } => {
@@ -835,16 +866,20 @@ impl TerminalApp {
     fn tick_pane(&mut self, now: f64, dt: f32, id: PaneId) -> bool {
         let interval = (self.config.cursor.blink_interval_ms as f64 / 1000.0).max(0.05);
         let reduced = self.config.reduced_motion(&self.home);
+        let scroll_on_output = self.config.general.scroll_on_output;
         let mut animating = false;
         if let Some(pane) = self.panes.get_mut(&id) {
             if !reduced && now - pane.last_blink_flip >= interval {
                 pane.blink_on = !pane.blink_on;
                 pane.last_blink_flip = now;
             }
-            if let Ok(t) = pane.session.term().lock() {
+            if let Ok(mut t) = pane.session.term().lock() {
                 if t.seqno() != pane.last_seqno {
                     pane.last_seqno = t.seqno();
                     animating = true;
+                    if scroll_on_output {
+                        t.scroll_to_bottom();
+                    }
                 }
                 if !t.fresh().is_empty() {
                     animating = true;
@@ -1142,6 +1177,7 @@ impl eframe::App for TerminalApp {
                 let cell = self.metrics;
                 let rects = self.layout.active_tab().rects(LRect::FULL);
                 let mut any_animating = false;
+                let mut fx_animating = false;
                 let hover_pos = ctx.input(|i| i.pointer.hover_pos());
                 let effects = self.config.effects.clone();
                 let theme_colors = self.theme.clone();
@@ -1258,12 +1294,28 @@ impl eframe::App for TerminalApp {
                                 pane_seed: pane_id,
                                 status_style: self.config.appearance.status_style(),
                                 user_host: &self.user_host,
+                                screen_reader: self.config.accessibility.screen_reader,
+                                bold_is_bright: self.config.font.bold_is_bright,
                             };
                             if render::paint_pane(ui, px, &mut term, &opts, pane.rain.as_mut(), dt)
                             {
-                                any_animating = true;
+                                fx_animating = true;
                             }
                         };
+                    }
+
+                    if let Some((flash_pane, started)) = self.bell_flash {
+                        let age = (now - started) as f32;
+                        if flash_pane == pane_id && age < BELL_FLASH_SECS {
+                            let alpha = if reduced {
+                                40
+                            } else {
+                                ((1.0 - age / BELL_FLASH_SECS) * 80.0) as u8
+                            };
+                            let tint = Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
+                            ui.painter_at(px).rect_filled(px, 0.0, tint);
+                            any_animating = true;
+                        }
                     }
 
                     let banner = self
@@ -1329,8 +1381,15 @@ impl eframe::App for TerminalApp {
                     }
                 }
 
+                // Output, the visual bell and dialogs repaint at once; background effects only as
+                // often as `[effects] max_fps` allows, and not at all while the window is
+                // unfocused when `pause_unfocused` is set.
+                let fx_paused = self.config.effects.pause_unfocused && !self.window_focused;
                 if any_animating || self.pending_paste.is_some() || self.pending_link.is_some() {
                     ctx.request_repaint();
+                } else if fx_animating && !fx_paused {
+                    let fps = self.config.effects.max_fps.max(1) as f32;
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f32(1.0 / fps));
                 } else {
                     ctx.request_repaint_after(std::time::Duration::from_millis(250));
                 }
@@ -1578,9 +1637,11 @@ impl TerminalApp {
             // The program in the pane asked for the mouse (vim, tmux, htop, less...): it gets the
             // clicks, drags and wheel instead of this terminal's own selection and scrollback.
             // Holding Shift is the usual way to bypass that and select text anyway.
-            let scroll = ctx.input(|i| i.raw_scroll_delta.y);
-            let lines = (scroll / cell.row_h.max(1.0)) * self.config.scrollback.wheel_lines;
-            let notches = lines.round() as isize;
+            let notches = if resp.hovered() {
+                self.wheel_lines(ctx, cell.row_h)
+            } else {
+                0
+            };
             let at = |p: Pos2| {
                 let (c, r) = cell_of(p);
                 (c, r.min(rows.saturating_sub(1)))
@@ -1663,9 +1724,10 @@ impl TerminalApp {
             if want_link {
                 if let Some(pos) = resp.interact_pointer_pos() {
                     let (c, r) = cell_of(pos);
+                    let plain = links_cfg.detect_plain_urls;
                     let hit = self.with_pane_term_ret(pane_id, |t| {
                         let line = t.view_abs(r);
-                        t.url_at(line, c).map(|u| u.url)
+                        t.url_at_with(line, c, plain).map(|u| u.url)
                     });
                     if let Some(url) = hit.flatten() {
                         self.open_link(pane_id, url, None);
@@ -1683,13 +1745,11 @@ impl TerminalApp {
         }
 
         if resp.hovered() {
-            let scroll = ctx.input(|i| i.raw_scroll_delta.y);
-            if scroll.abs() > 0.01 {
+            let lines = self.wheel_lines(ctx, cell.row_h);
+            if lines != 0 {
                 let in_alt = self
                     .with_pane_term_ret(pane_id, |t| t.in_alt_screen())
                     .unwrap_or(false);
-                let lines = ((scroll / cell.row_h.max(1.0)) * self.config.scrollback.wheel_lines)
-                    .round() as isize;
                 if in_alt && self.config.scrollback.wheel_lines > 0.0 {
                     let app_cursor = self
                         .with_pane_term_ret(pane_id, |t| t.modes.app_cursor)
@@ -1708,6 +1768,25 @@ impl TerminalApp {
                 }
             }
         }
+    }
+
+    /// Mouse-wheel or trackpad movement since the last call, in whole lines. With
+    /// `[general] smooth_scroll` egui's eased scroll delta is used (a notch is spread over a few
+    /// frames); either way the fractional remainder is carried over, so slow trackpad scrolling
+    /// still moves instead of rounding to zero.
+    fn wheel_lines(&mut self, ctx: &egui::Context, row_h: f32) -> isize {
+        let smooth = self.config.general.smooth_scroll;
+        let scroll = ctx.input(|i| {
+            if smooth {
+                i.smooth_scroll_delta.y
+            } else {
+                i.raw_scroll_delta.y
+            }
+        });
+        self.wheel_residual += (scroll / row_h.max(1.0)) * self.config.scrollback.wheel_lines;
+        let whole = self.wheel_residual.trunc();
+        self.wheel_residual -= whole;
+        whole as isize
     }
 
     fn handle_pane_keyboard(&mut self, ctx: &egui::Context, pane_id: PaneId) {
@@ -2025,7 +2104,7 @@ impl TerminalApp {
             self.sync_theme_colors_to_panes();
             self.sync_cursor_default_to_panes();
             self.font = render::font_id(&self.config.font.family, self.config.font.size);
-            self.metrics = render::measure(ctx, &self.font);
+            self.metrics = render::measure(ctx, &self.font, self.config.font.line_height);
             self.metrics_font_size = self.config.font.size;
             let want_rain = self.config.rain_enabled(&self.home);
             for pane in self.panes.values_mut() {

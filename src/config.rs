@@ -515,7 +515,7 @@ impl Default for A11yCfg {
             high_contrast: false,
             min_contrast: 0.0,
             reduced_motion: false,
-            screen_reader: false,
+            screen_reader: true,
             speak_output: false,
             announce_bell: true,
             low_glow: false,
@@ -785,7 +785,8 @@ impl Config {
                 }
             }
         }
-        t
+        // `[accessibility] min_contrast`: lift any text colour that falls below the ratio.
+        crate::a11y::enforce_min_contrast(t, self.accessibility.min_contrast)
     }
 
     /// Switch the active preset: resolves its base `Theme` and seeds the
@@ -1623,5 +1624,18 @@ mod tests {
         assert_eq!(find("ctrl+f"), None);
         assert_eq!(find("ctrl+shift+f"), Some(Action::Find));
         assert_eq!(problems.len(), 2);
+    }
+
+    #[test]
+    fn min_contrast_lifts_low_contrast_text() {
+        let mut c = Config::default();
+        c.theme.foreground = Some("#404040".into());
+        c.theme.background = Some("#303030".into());
+        let home = HomeConf::default();
+        let before = c.theme(&home);
+        assert!(crate::theme::contrast_ratio(before.fg, before.bg) < 2.0);
+        c.accessibility.min_contrast = 7.0;
+        let after = c.theme(&home);
+        assert!(crate::theme::contrast_ratio(after.fg, after.bg) >= 7.0);
     }
 }
