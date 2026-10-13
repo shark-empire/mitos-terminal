@@ -19,11 +19,11 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | Cursor styles | ✅ | DECSCUSR, `config::CursorCfg` (applied as each pane's default by `app.rs::sync_cursor_default_to_panes`), `render::paint_cursor` |
 | Alternate screen | ✅ | `term/ops.rs::enter_alt/leave_alt`, own scrollback rules |
 | Scrollback | ✅ | capped `VecDeque<Row>`, `config::ScrollCfg` |
-| Hyperlinks | ✅ | OSC 8 + plain-URL detection (`term/select.rs`), policy-gated open (`security.rs`) |
+| Hyperlinks | ✅ | OSC 8 + plain-URL detection (`term/select.rs`; `[links] detect_plain_urls = false` leaves only OSC 8), policy-gated open (`security.rs`) |
 | Bracketed paste | ✅ | DECSET 2004, `security::prepare_paste` |
 | Mouse reporting | ✅ | X10/Normal/Button/Any × default/UTF-8/SGR/urxvt (`input.rs`), delivered to the program by `app.rs::report_pane_mouse`: press/release, drag and motion, wheel. Hold Shift to select locally instead |
 | OSC sequences | ✅ | 0/1/2/4/7/8/9/10/11/12/52/104/110/111/112/133/777 + MITOS-private ones |
-| Bell handling | ✅ | visual/audible/urgent, rate-independent of terminal flood (`term/mod.rs` events cap) |
+| Bell handling | ✅ | visual flash (`[bell] visual`, at most ~2.5 a second), audible, urgent hint and a screen-reader announcement (`[accessibility] announce_bell`); `[bell] min_interval_ms` rate-limits all of them (`app.rs::bell_allowed`) and the event queue is capped in `term/mod.rs` |
 | Title/icon updates | ✅ | OSC 0/1/2, title stack (`CSI 22/23 t`) |
 | Terminal capability reporting | ✅ | DA1/DA2/DSR/DECRQM — deliberately **not** implemented: title report (`CSI 21 t`), ENQ answerback, DECRQSS, resize/move requests (classic injection vectors) |
 
@@ -56,10 +56,13 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | GPU acceleration where practical | ✅ | via egui/eframe's own GPU-backed tessellator; see Limitations for what that means concretely |
 | Glyph atlas, font cache | ✅ | egui's own `Fonts` (one atlas texture, cached across frames) |
 | Damage tracking | ⚠️ | idle panes stop requesting repaints (`ctx.request_repaint_after`); the per-row dirty set (`Term::take_damage`) is maintained but the renderer repaints every row, so it is not used yet |
-| Smooth scrolling | ⚠️ | wheel-based `Term::scroll_display`, whole lines per notch; `general.smooth_scroll` is not read yet |
+| Smooth scrolling | ✅ | `general.smooth_scroll` uses egui's eased wheel delta and the fractional remainder is carried between frames (`app.rs::wheel_lines`), so trackpads work; `general.scroll_on_output` snaps back to the bottom on new output; scrolling itself is `Term::scroll_display` |
 | Cursor rendering | ✅ | block/underline/bar, blink, hollow-when-unfocused |
+| Bold text | ✅ | `font.bold_is_bright = false` (default) double-strikes bold runs; `true` brightens their colour instead (egui ships no bold weight) |
+| Line height | ✅ | `font.line_height` (0.8–2.0) stretches the row and keeps glyphs centred (`render::Metrics::text_dy`) |
+| Effect frame cap | ✅ | `effects.max_fps` caps background-effect repaints; `effects.pause_unfocused` stops them while the window is unfocused |
 | Selection rendering | ✅ | `render::paint_pane` |
-| Fallback renderer | ✅ | `main.rs` retries once with `LIBGL_ALWAYS_SOFTWARE=1` if hardware init fails |
+| Fallback renderer | ✅ | if hardware init fails, `main.rs` re-executes itself once with `LIBGL_ALWAYS_SOFTWARE=1` (a fresh process, because winit allows only one event loop per process) |
 | HiDPi support | ✅ | inherited from egui (logical points throughout; no raw-pixel assumptions in `render.rs`) |
 
 ## Security
@@ -79,12 +82,12 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | Feature | Status | Where |
 |---|---|---|
 | Scalable text | ✅ | font-size zoom, no hardcoded pixel sizes |
-| High contrast | ⚠️ | two built-in high-contrast themes; the `accessibility.min_contrast` setting (`a11y::enforce_min_contrast`) is not applied yet |
-| Screen-reader compatibility | ✅ | a real, transparent `egui::Label` carrying the visible screen text sits over the painted grid, so it gets a normal accessibility node for free from whatever AT backend egui/eframe is built with — see Limitations for the precise scope of "for free" |
+| High contrast | ✅ | two built-in high-contrast themes + `accessibility.min_contrast` (applied in `Config::theme` through `a11y::enforce_min_contrast`) |
+| Screen-reader compatibility | ✅ | a real, transparent `egui::Label` carrying the visible screen text sits over the painted grid (`[accessibility] screen_reader`, on by default), so it gets a normal accessibility node for free from whatever AT backend egui/eframe is built with — see Limitations for the precise scope of "for free" |
 | Keyboard navigation | ✅ | every dialog/palette/tab uses real focusable egui widgets |
 | Reduced motion | ✅ | `accessibility.reduced_motion` (+ `$MITOS_REDUCED_MOTION`) disables cursor blink and all fx animation |
 | Configurable cursor | ✅ | shape/blink/thickness/unfocused style |
-| Audible/visual bell | ✅ | `a11y::ring_bell` (desktop bell sound, falls back to `/dev/tty` BEL), visual flash |
+| Audible/visual bell | ✅ | `a11y::ring_bell` (desktop bell sound, falls back to `/dev/tty` BEL); the visual bell is a brief white tint over the pane that rang (`app.rs`), a static one under reduced motion |
 
 ## Testing
 | Feature | Status | Where |
@@ -130,14 +133,15 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 
 ## Settings that parse but are not read yet
 These keys are accepted, saved and round-tripped by `config.rs`, but nothing consumes them, so changing them has no effect today:
-`general.smooth_scroll`, `general.scroll_on_output`, `accessibility.min_contrast`, `accessibility.screen_reader`, `accessibility.announce_bell`, `font.bold_is_bright` (bold is always brightened), `font.line_height`, `font.fallbacks`, `links.detect_plain_urls` (detection is always on), `bell.min_interval_ms`, `effects.max_fps`, `effects.pause_unfocused`, `effects.glitch`, and a profile's `font_size`.
+`font.fallbacks`, `font.ligatures`, `font.family` (only the bundled monospace font renders — see the Font selection and Ligatures rows), `effects.glitch` (no glitch effect exists), `appearance.wallpaper_path` (only the procedural backdrop is drawn — see the Wallpaper row), and a profile's `font_size` (there is one font size per window).
 
 ## Theme Engine
 
 Implements the "one terminal, any visual style" design brief. The
 architecture matches its diagram: the **Terminal Engine** (`term/`,
-`pty.rs`, `session.rs`, `input.rs`) never imports `theme`, `fx` or
-`render`; the **Theme Engine** (`theme.rs`, `fx.rs`, and the theme-related
+`pty.rs`, `session.rs`, `input.rs`) never imports `fx` or `render` and takes
+only the colour primitives (`Rgb`, `xterm_extended`) from `theme`, which in
+turn uses the engine's `Color`/`Overrides` types; the **Theme Engine** (`theme.rs`, `fx.rs`, and the theme-related
 half of `config.rs`) owns every colour and effect; **Terminal UI**
 (`render.rs`, `layout.rs`, `app.rs`) is the only layer that reads both.
 Switching themes changes what gets *painted* — never the shell, the PTY,
