@@ -33,6 +33,9 @@ use crate::theme::{mix, Rgb, Theme};
 pub struct Metrics {
     pub char_w: f32,
     pub row_h: f32,
+    /// Vertical offset of the glyphs inside a row: `[font] line_height` above or below 1.0
+    /// stretches the row, and this keeps the text centred in it (0.0 at the default).
+    pub text_dy: f32,
 }
 
 /// Measures one monospace glyph cell by laying out "M" the same way
@@ -40,14 +43,16 @@ pub struct Metrics {
 /// (`ctx.fonts(|f| f.layout_no_wrap(...))`), so the grid's column/row size
 /// always matches what was actually rasterised — no separate glyph-metrics
 /// API to drift out of sync with it.
-pub fn measure(ctx: &egui::Context, font: &FontId) -> Metrics {
+pub fn measure(ctx: &egui::Context, font: &FontId, line_height: f32) -> Metrics {
     let size = ctx.fonts(|f| {
         f.layout_no_wrap("M".to_string(), font.clone(), Color32::WHITE)
             .size()
     });
+    let row_h = (size.y * line_height).max(1.0);
     Metrics {
         char_w: size.x.max(1.0),
-        row_h: size.y.max(1.0),
+        row_h,
+        text_dy: (row_h - size.y) / 2.0,
     }
 }
 
@@ -237,6 +242,11 @@ pub struct PaintOpts<'a> {
     /// automatically if the margin is too thin for it to read cleanly.
     pub status_style: crate::theme::StatusStyle,
     pub user_host: &'a str,
+    /// `[accessibility] screen_reader`: publish the screen text as an accessibility node.
+    pub screen_reader: bool,
+    /// `[font] bold_is_bright`: bold text gets a brighter colour; otherwise it is double-struck,
+    /// because egui ships no bold weight.
+    pub bold_is_bright: bool,
 }
 
 /// Paints one pane's chrome (glass/glow/vignette/HUD accents), grid, cursor,
@@ -361,17 +371,19 @@ pub fn paint_pane(
     // Accessibility proxy: a real, fully transparent widget carrying the
     // visible screen text, so a screen reader gets a normal AT node at this
     // rect. The glyphs users actually see are the Painter calls below.
-    let a11y_text = term.visible_text();
-    ui.put(
-        rect,
-        egui::Label::new(
-            egui::RichText::new(a11y_text)
-                .font(opts.font.clone())
-                .color(Color32::TRANSPARENT),
-        )
-        .selectable(false)
-        .wrap(),
-    );
+    if opts.screen_reader {
+        let a11y_text = term.visible_text();
+        ui.put(
+            rect,
+            egui::Label::new(
+                egui::RichText::new(a11y_text)
+                    .font(opts.font.clone())
+                    .color(Color32::TRANSPARENT),
+            )
+            .selectable(false)
+            .wrap(),
+        );
+    }
 
     let (cx, cy) = term.cursor_pos();
     let cursor_row_visible = term.display_offset == 0;
@@ -432,7 +444,8 @@ pub fn paint_pane(
                         color: fg,
                         ..Default::default()
                     };
-                    if run.flags & attr::BOLD != 0 {
+                    let bold = run.flags & attr::BOLD != 0;
+                    if bold && opts.bold_is_bright {
                         fmt.color = c32(brighten(run.fg));
                     }
                     if run.flags & attr::ITALIC != 0 {
@@ -442,7 +455,13 @@ pub fn paint_pane(
                         fmt.strikethrough = Stroke::new(1.0_f32, fmt.color);
                     }
                     job.append(&run.text, 0.0, fmt);
-                    painter.galley(Pos2::new(x0, y), ui.fonts(|f| f.layout_job(job)), fg);
+                    let galley = ui.fonts(|f| f.layout_job(job));
+                    if bold && !opts.bold_is_bright {
+                        // egui ships no bold weight: double-strike the run a hair apart.
+                        let shifted = Pos2::new(x0 + 0.6, y + m.text_dy);
+                        painter.galley(shifted, galley.clone(), fg);
+                    }
+                    painter.galley(Pos2::new(x0, y + m.text_dy), galley, fg);
                 }
                 paint_underline(&painter, cell_rect, run, theme);
             }
