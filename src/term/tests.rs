@@ -483,6 +483,21 @@ fn osc8_hyperlinks() {
 }
 
 #[test]
+fn plain_urls_can_be_switched_off_but_osc8_links_stay() {
+    let mut t = t(80, 3);
+    feed(
+        &mut t,
+        "see https://example.com now\r\n\x1b]8;;https://osc8.example/\x07linked\x1b]8;;\x07",
+    );
+    let plain_line = t.view_abs(0);
+    let link_line = t.view_abs(1);
+    assert!(t.url_at_with(plain_line, 8, true).is_some());
+    assert!(t.url_at_with(plain_line, 8, false).is_none());
+    let osc8 = t.url_at_with(link_line, 2, false).map(|u| u.url);
+    assert_eq!(osc8, Some("https://osc8.example/".to_string()));
+}
+
+#[test]
 fn osc8_respects_policy_and_limits() {
     let mut t = t(40, 3);
     t.set_policy(Policy {

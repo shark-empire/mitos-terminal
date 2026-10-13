@@ -433,6 +433,12 @@ impl Term {
 
     /// The URL under `(line, col)`: an OSC 8 hyperlink first, else a plain-text URL.
     pub fn url_at(&self, line: u64, col: usize) -> Option<UrlSpan> {
+        self.url_at_with(line, col, true)
+    }
+
+    /// Like `url_at`, but with `plain` set to `false` only explicit OSC 8 hyperlinks match
+    /// (`[links] detect_plain_urls = false`).
+    pub fn url_at_with(&self, line: u64, col: usize, plain: bool) -> Option<UrlSpan> {
         let row = self.row_by_abs(line)?;
         if col < row.cells.len() {
             let mut c = col;
@@ -453,6 +459,9 @@ impl Term {
                 }
                 return Some(UrlSpan { c0, c1, url: uri });
             }
+        }
+        if !plain {
+            return None;
         }
         self.urls_in_row(row)
             .into_iter()
