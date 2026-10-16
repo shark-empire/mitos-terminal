@@ -7,7 +7,7 @@
 # Run it from the Actions tab: "macOS build" -> "Run workflow". When it finishes, open the run,
 # download the `mitos-terminal-macos-x86_64` artifact at the bottom, and follow docs/MACOS.md.
 
-name: macOS build
+name: macOS-build-of mitos-terminal
 
 on:
   workflow_dispatch: {}
