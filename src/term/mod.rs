@@ -19,9 +19,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use mitos_utils::ipc::RichWidget;
 use vte::Parser;
 
+use crate::compat::RichWidget;
 use crate::theme::Rgb;
 
 mod cell;

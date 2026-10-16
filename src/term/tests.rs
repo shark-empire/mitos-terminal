@@ -2,7 +2,7 @@
 //! Everything here runs without a window or a PTY.
 
 use super::*;
-use mitos_utils::ipc::RichWidget;
+use crate::compat::RichWidget;
 
 fn t(cols: usize, rows: usize) -> Term {
     Term::new(cols, rows, 1000)
@@ -644,7 +644,7 @@ fn command_not_found_scan_is_armed_only_after_enter() {
 #[test]
 fn mitos_execution_blocks() {
     let mut t = t(40, 6);
-    let osc = mitos_utils::ipc::OSC_NEW_BLOCK;
+    let osc = crate::compat::OSC_NEW_BLOCK;
     feed(&mut t, &format!("\x1b]{osc};user@host:~$ \x07"));
     assert_eq!(row(&t, 0), "user@host:~$");
     assert!(t.view_row(0).marks & mark::BLOCK != 0);

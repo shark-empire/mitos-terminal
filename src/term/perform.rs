@@ -791,14 +791,14 @@ impl Term {
     /// MITOS private OSCs: widgets (MROP), execution blocks, autocomplete.
     fn osc_mitos(&mut self, params: &[&[u8]]) {
         let cmd = params[0];
-        if cmd == mitos_utils::ipc::OSC_WIDGET.as_bytes() {
+        if cmd == crate::compat::OSC_WIDGET.as_bytes() {
             if params.len() >= 2 {
                 let payload = join_params(params, 1);
                 if let Ok(w) = serde_json::from_slice::<RichWidget>(&payload) {
                     self.inject_widget(w, false);
                 }
             }
-        } else if cmd == mitos_utils::ipc::OSC_NEW_BLOCK.as_bytes() {
+        } else if cmd == crate::compat::OSC_NEW_BLOCK.as_bytes() {
             let prompt = if params.len() >= 2 {
                 lossy(&join_params(params, 1))
             } else {

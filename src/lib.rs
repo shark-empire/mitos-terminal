@@ -10,13 +10,19 @@
 //! * [`config`], [`theme`] — `terminal.toml`, `home.conf`, palettes, contrast.
 //! * [`render`], [`fx`], [`a11y`] — egui painting of a grid (+ cinematic effects).
 //! * [`layout`], [`app`] — tabs, split panes, menus, dialogs, command palette.
-//! * [`ipc`], [`pkg_bridge`], [`platform`] — MITOS ecosystem + desktop glue.
+//! * [`ipc`], [`pkg_bridge`], [`compat`], [`platform`] — MITOS ecosystem + desktop glue
+//!   (the `mitos` feature; a standalone build swaps in local stand-ins).
 
 pub mod a11y;
 pub mod app;
+pub mod compat;
 pub mod config;
 pub mod fx;
 pub mod input;
+#[cfg(feature = "mitos")]
+pub mod ipc;
+#[cfg(not(feature = "mitos"))]
+#[path = "ipc_standalone.rs"]
 pub mod ipc;
 pub mod layout;
 pub mod pkg_bridge;

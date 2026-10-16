@@ -56,9 +56,10 @@ fn main() -> eframe::Result<()> {
     }
 }
 
-/// Replaces this process with a copy of itself that has `LIBGL_ALWAYS_SOFTWARE=1` set. Only
-/// returns (with the original error) if that is impossible.
-#[cfg(unix)]
+/// Replaces this process with a copy of itself that has `LIBGL_ALWAYS_SOFTWARE=1` set (Mesa's
+/// software rasteriser). Only returns (with the original error) if that is impossible; macOS has
+/// no such switch, so there it returns at once.
+#[cfg(all(unix, not(target_os = "macos")))]
 fn relaunch_with_software_rendering(original: eframe::Error) -> eframe::Result<()> {
     use std::os::unix::process::CommandExt;
     let Ok(exe) = std::env::current_exe() else {
@@ -72,7 +73,7 @@ fn relaunch_with_software_rendering(original: eframe::Error) -> eframe::Result<(
     Err(original)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 fn relaunch_with_software_rendering(original: eframe::Error) -> eframe::Result<()> {
     Err(original)
 }

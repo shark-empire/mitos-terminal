@@ -11,9 +11,12 @@
 //! wrapper around it — see `main.rs`'s grid-update loop for how it's
 //! actually used.
 
+use crate::compat::RichWidget;
+#[cfg(feature = "mitos")]
 use mitos_pkg::config::Config;
+#[cfg(feature = "mitos")]
 use mitos_pkg::daemon::client::DaemonClient;
-use mitos_utils::ipc::RichWidget;
+#[cfg(feature = "mitos")]
 use std::path::PathBuf;
 
 /// Best-effort extraction of an attempted command name from a shell's
@@ -68,6 +71,7 @@ pub fn detect_missing_command(line: &str) -> Option<String> {
 /// as an error for what's ultimately a nice-to-have suggestion on top
 /// of a mistyped command, not a diagnostic tool. A caller that wants to
 /// know *why* nothing came back should use `DaemonClient` directly.
+#[cfg(feature = "mitos")]
 pub fn suggest_install(missing_command: &str) -> Option<RichWidget> {
     let socket_path = PathBuf::from(Config::DEFAULT_SOCKET);
     let mut client = DaemonClient::connect(&socket_path).ok()?;
@@ -81,4 +85,10 @@ pub fn suggest_install(missing_command: &str) -> Option<RichWidget> {
         label: format!("📦 Install {}", hit.name),
         cmd: format!("mitos-pkg install {}", hit.name),
     })
+}
+
+/// A standalone build has no `mitos-pkgd` to ask, so there is never a suggestion.
+#[cfg(not(feature = "mitos"))]
+pub fn suggest_install(_missing_command: &str) -> Option<RichWidget> {
+    None
 }

@@ -62,6 +62,10 @@ cargo test
 `Cargo.toml`); if you're developing against local checkouts, switch those to
 `path = "../mitos-utils"` / `path = "../mitos-pkg"` before building.
 
+Both are optional (feature `mitos`, on by default). `cargo build --release
+--no-default-features` builds a **standalone** terminal without them — that is
+how it is built for macOS; see `docs/MACOS.md`.
+
 ## Configuration
 
 `~/.config/mitos/terminal.toml` — every table is optional; a partial or

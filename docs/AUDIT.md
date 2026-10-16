@@ -131,6 +131,13 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
   than hand-building a platform accessibility tree, but does not itself
   control whether that backend is compiled into this build of `eframe`.
 
+- **macOS**: the `mitos` feature (MITOS-only crates, IPC, install suggestions) can be switched
+  off with `--no-default-features`; that standalone build is linted and tested on Linux in CI and
+  built for Intel Macs by `.github/workflows/macos.yml`, but it has not been run on real Mac
+  hardware yet. Things that read `/proc` or call Linux tools (job detection, working-directory
+  inheritance without shell integration, notifications, bell sound, speech) do nothing there.
+  See `docs/MACOS.md`.
+
 ## Settings that parse but are not read yet
 These keys are accepted, saved and round-tripped by `config.rs`, but nothing consumes them, so changing them has no effect today:
 `font.fallbacks`, `font.ligatures`, `font.family` (only the bundled monospace font renders — see the Font selection and Ligatures rows), `effects.glitch` (no glitch effect exists), `appearance.wallpaper_path` (only the procedural backdrop is drawn — see the Wallpaper row), and a profile's `font_size` (there is one font size per window).

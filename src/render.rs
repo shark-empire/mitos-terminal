@@ -833,8 +833,8 @@ enum WidgetView {
     Sparkline,
 }
 
-fn describe(w: &mitos_utils::ipc::RichWidget) -> WidgetView {
-    use mitos_utils::ipc::RichWidget;
+fn describe(w: &crate::compat::RichWidget) -> WidgetView {
+    use crate::compat::RichWidget;
     match w {
         RichWidget::Button { label, cmd } => WidgetView::Button {
             label: label.clone(),
