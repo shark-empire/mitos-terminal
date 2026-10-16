@@ -1,0 +1,49 @@
+# MITOS Terminal — macOS build
+#
+# Builds the standalone terminal (no MITOS-only crates) for an Intel Mac, e.g. a 2014 MacBook
+# running macOS 11 "Big Sur", and uploads it as a downloadable artifact — nothing has to be
+# compiled on the Mac itself.
+#
+# Run it from the Actions tab: "macOS build" -> "Run workflow". When it finishes, open the run,
+# download the `mitos-terminal-macos-x86_64` artifact at the bottom, and follow docs/MACOS.md.
+
+name: macOS build
+
+on:
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: macOS Intel (runs on macOS 11 and newer)
+    runs-on: macos-15-intel
+    env:
+      # Make the binary — and any C/Objective-C a dependency compiles — start on macOS 11 "Big Sur".
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (standalone, release)
+        run: cargo build --release --no-default-features
+      - name: Package
+        run: |
+          mkdir -p dist/mitos-terminal
+          cp target/release/mitos-terminal dist/mitos-terminal/
+          cp .config/mitos/terminal.toml dist/mitos-terminal/terminal.toml.example
+          cp docs/MACOS.md dist/mitos-terminal/README-macOS.md
+          file dist/mitos-terminal/mitos-terminal
+          # Show the minimum macOS version the binary asks for (should be 11.0).
+          otool -l dist/mitos-terminal/mitos-terminal | grep -A3 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX' || true
+          # A tarball inside the artifact zip keeps the executable bit.
+          tar -czf mitos-terminal-macos-x86_64.tar.gz -C dist mitos-terminal
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitos-terminal-macos-x86_64
+          path: mitos-terminal-macos-x86_64.tar.gz
+          if-no-files-found: error
