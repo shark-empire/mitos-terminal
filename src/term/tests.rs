@@ -677,9 +677,7 @@ fn widget_commands_carry_the_widgets_trust() {
         .into_iter()
         .filter_map(|e| match e {
             TermEvent::WidgetCommand {
-                command,
-                trusted,
-                ..
+                command, trusted, ..
             } => Some((command, trusted)),
             _ => None,
         })

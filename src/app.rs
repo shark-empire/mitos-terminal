@@ -788,9 +788,7 @@ impl TerminalApp {
                     }
                 }
                 TermEvent::WidgetCommand {
-                    command,
-                    trusted,
-                    ..
+                    command, trusted, ..
                 } => {
                     // A button a *program* drew can carry any command while showing only its
                     // label, so ask first (and show the real command) unless the widget is
