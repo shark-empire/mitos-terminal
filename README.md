@@ -1,5 +1,5 @@
 # mitos-terminal
-
+https://github.com/shark-empire/mitos-terminal/blob/main/screenshot.png
 MITOS's native terminal emulator — an `egui`/`eframe` application that owns
 real PTYs, parses ANSI/VT100 output through a from-scratch screen model, and
 integrates with the rest of the MITOS ecosystem (`mitos-pkg`, `mitos-shell`,
@@ -14,7 +14,7 @@ documented best-effort rather than silently stubbed).
 
 ```
 src/
-  term/          the VT/xterm screen model — no GUI, no I/O, fully unit-tested
+  term/ bvf    saz1  §CVq  a`       the VT/xterm screen model — no GUI, no I/O, fully unit-tested12!  f  
     mod.rs         Term, events, policy, damage tracking, widgets
     cell.rs        Cell/Color/Pen/Row, attribute & mark bitflags
     modes.rs       terminal modes, cursor style, charsets
