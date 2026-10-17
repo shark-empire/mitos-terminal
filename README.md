@@ -1,5 +1,5 @@
 # mitos-terminal
-https://github.com/shark-empire/mitos-terminal/blob/main/screenshot.png
+![MITOS Terminal screenshot](screenshot.png)
 MITOS's native terminal emulator — an `egui`/`eframe` application that owns
 real PTYs, parses ANSI/VT100 output through a from-scratch screen model, and
 integrates with the rest of the MITOS ecosystem (`mitos-pkg`, `mitos-shell`,
