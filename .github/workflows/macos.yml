@@ -1,16 +1,30 @@
 # MITOS Terminal — macOS build
 #
-# Builds the standalone terminal (no MITOS-only crates) for an Intel Mac, e.g. a 2014 MacBook
-# running macOS 11 "Big Sur", and uploads it as a downloadable artifact — nothing has to be
+# Builds the standalone terminal (no MITOS-only crates) for an Intel Mac — e.g. a 2014 MacBook
+# running macOS 11 "Big Sur" — and uploads it as a downloadable artifact, so nothing has to be
 # compiled on the Mac itself.
 #
-# Run it from the Actions tab: "macOS build" -> "Run workflow". When it finishes, open the run,
-# download the `mitos-terminal-macos-x86_64` artifact at the bottom, and follow docs/MACOS.md.
+# It starts by itself when a push to `main` changes the code (src/, Cargo.toml) or this file, and
+# you can also start it by hand: Actions -> "macOS build" -> "Run workflow". When it finishes,
+# open the run, download the `mitos-terminal-macos-x86_64` artifact at the bottom of the page and
+# follow docs/MACOS.md.
+#
+# (macOS minutes are metered on private repositories: delete the `push:` block below to make
+# this manual-only.)
 
-name: macOS-build-of mitos-terminal
+name: macOS build
 
 on:
   workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/macos.yml"
+      - "Cargo.toml"
+      - "src/**"
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,27 +32,32 @@ env:
 
 jobs:
   build:
-    name: macOS Intel (runs on macOS 11 and newer)
-    runs-on: macos-15-intel
+    name: macOS (Intel build for macOS 11 and newer)
+    # An Apple-silicon runner is always available; it cross-compiles the Intel (x86_64) binary.
+    runs-on: macos-15
+    timeout-minutes: 60
     env:
       # Make the binary — and any C/Objective-C a dependency compiles — start on macOS 11 "Big Sur".
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Rust toolchain
+      - name: Setup Rust toolchain (Intel target)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-      - name: cargo build (standalone, release)
-        run: cargo build --release --no-default-features
+      - name: cargo build (standalone, release, Intel)
+        run: cargo build --release --no-default-features --target x86_64-apple-darwin
       - name: Package
         run: |
+          BIN=target/x86_64-apple-darwin/release/mitos-terminal
           mkdir -p dist/mitos-terminal
-          cp target/release/mitos-terminal dist/mitos-terminal/
-          cp .config/mitos/terminal.toml dist/mitos-terminal/terminal.toml.example
-          cp docs/MACOS.md dist/mitos-terminal/README-macOS.md
-          file dist/mitos-terminal/mitos-terminal
+          cp "$BIN" dist/mitos-terminal/
+          cp .config/mitos/terminal.toml dist/mitos-terminal/terminal.toml.example || true
+          cp docs/MACOS.md dist/mitos-terminal/README-macOS.md || true
+          file "$BIN"
           # Show the minimum macOS version the binary asks for (should be 11.0).
-          otool -l dist/mitos-terminal/mitos-terminal | grep -A3 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX' || true
+          otool -l "$BIN" | grep -A3 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX' || true
           # A tarball inside the artifact zip keeps the executable bit.
           tar -czf mitos-terminal-macos-x86_64.tar.gz -C dist mitos-terminal
       - name: Upload artifact
