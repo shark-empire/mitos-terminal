@@ -290,8 +290,14 @@ impl TerminalApp {
         startup_errors.extend(keymap_problems);
 
         let font = render::font_id(&config.font.family, config.font.size);
-        let metrics = render::measure(&cc.egui_ctx, &font, config.font.line_height);
-        let metrics_font_size = config.font.size;
+
+// egui fonts are unavailable until the first frame.
+let metrics = Metrics {
+    char_w: config.font.size * 0.6,
+    row_h: config.font.size * config.font.line_height,
+    text_dy: 0.0,
+};
+let metrics_font_size = config.font.size;
 
         let first = new_pane(&cc.egui_ctx, &config, &home, 80, 24, None, None);
         let pane_id: PaneId = 1;
@@ -1014,6 +1020,16 @@ impl eframe::App for TerminalApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_count += 1;
+        
+
+    if self.frame_count == 1 {
+
+        self.metrics =
+
+            render::measure(ctx, &self.font, self.config.font.line_height);
+
+    }
+
         if self.config_dirty.swap(false, Ordering::Relaxed) {
             self.reload_config(ctx);
         }
