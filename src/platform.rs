@@ -5,17 +5,63 @@ use std::sync::Mutex;
 
 use arboard::Clipboard;
 
-/// `notify-send` fallback for OSC 9/777/9;4 notifications when mitos-gui's own
-/// socket is not reachable (e.g. running the terminal standalone).
+/// Desktop notification for OSC 9/777/9;4 notifications when mitos-gui's own socket is not
+/// reachable (e.g. running the terminal standalone): `notify-send` on Linux, `osascript` on macOS.
 pub fn notify_send(title: &str, body: &str) {
-    let _ = Command::new("notify-send")
-        .arg("--app-name=MITOS Terminal")
-        .arg(title)
-        .arg(body)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    #[cfg(target_os = "macos")]
+    {
+        // The text comes from whatever program is running in the terminal, so it is handed to a
+        // fixed script as `argv` instead of being spliced into AppleScript source (which would let
+        // an escape sequence run arbitrary AppleScript). `--` keeps a title or body that starts
+        // with `-` from being read as an option.
+        let _ = Command::new("/usr/bin/osascript")
+            .args([
+                "-e",
+                "on run argv",
+                "-e",
+                "display notification (item 2 of argv) with title (item 1 of argv)",
+                "-e",
+                "end run",
+                "--",
+            ])
+            .arg(title)
+            .arg(body)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = Command::new("notify-send")
+            .arg("--app-name=MITOS Terminal")
+            .arg(title)
+            .arg(body)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
+/// This machine's host name (`gethostname(3)`), for the status strip and for deciding whether an
+/// OSC 7 `file://host/...` URL is local. This replaces reading `/proc/sys/kernel/hostname`, which
+/// does not exist on macOS (so the host was missing from the strip and every OSC 7 working-directory
+/// report from the shell was rejected as "remote").
+pub fn hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: `gethostname` writes at most `buf.len()` bytes into the buffer.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 /// Ask the window manager to flash/highlight the taskbar entry (bell, in an

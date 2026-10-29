@@ -369,6 +369,10 @@ pub fn paint_hud_accents(p: &Painter, rect: Rect, color: [u8; 3], alpha: u8) {
 /// constant animation, and a static backdrop also means painting it never
 /// forces a repaint the way an animated one would — the two goals turned
 /// out to want the same answer.
+///
+/// `opacity` (0..=1) is the window opacity: the base wash and the blobs are scaled by it, so the
+/// backdrop never turns a see-through window opaque (it used to paint a fully opaque base here,
+/// which made the Opacity setting a no-op whenever the glass look was on).
 pub fn paint_ambient_backdrop(
     p: &Painter,
     rect: Rect,
@@ -376,8 +380,14 @@ pub fn paint_ambient_backdrop(
     base: [u8; 3],
     accent_a: [u8; 3],
     accent_b: [u8; 3],
+    opacity: f32,
 ) {
-    p.rect_filled(rect, 0.0, Color32::from_rgb(base[0], base[1], base[2]));
+    let opacity = opacity.clamp(0.0, 1.0);
+    p.rect_filled(
+        rect,
+        0.0,
+        Color32::from_rgba_unmultiplied(base[0], base[1], base[2], (opacity * 255.0).round() as u8),
+    );
     let short = rect.width().min(rect.height());
     for (i, (color, size_frac, peak_alpha)) in [
         (accent_a, 0.55, 26u8),
@@ -394,7 +404,8 @@ pub fn paint_ambient_backdrop(
             rect.left() + rect.width() * fx,
             rect.top() + rect.height() * fy,
         );
-        paint_soft_blob(p, center, short * size_frac, color, peak_alpha);
+        let peak = (peak_alpha as f32 * opacity).round() as u8;
+        paint_soft_blob(p, center, short * size_frac, color, peak);
     }
 }
 

@@ -1027,10 +1027,23 @@ pub(crate) fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-fn local_hostname() -> Option<String> {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .ok()
-        .map(|s| s.trim().to_string())
+/// This machine's host name via `gethostname(3)`. (It used to read `/proc/sys/kernel/hostname`,
+/// which does not exist on macOS, so there every OSC 7 report with the machine's own host name was
+/// treated as remote and ignored.)
+pub(crate) fn local_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: `gethostname` writes at most `buf.len()` bytes into the buffer.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 /// `file://host/path` → local path. Remote hosts (SSH sessions) are rejected so a
@@ -1041,7 +1054,9 @@ pub(crate) fn parse_file_uri(uri: &str) -> Option<String> {
     let host = &rest[..slash];
     let local = host.is_empty()
         || host == "localhost"
-        || local_hostname().map(|h| h == host).unwrap_or(false);
+        || local_hostname()
+            .map(|h| h.eq_ignore_ascii_case(host))
+            .unwrap_or(false);
     if !local {
         return None;
     }

@@ -526,6 +526,19 @@ fn osc7_cwd_local_only() {
 }
 
 #[test]
+fn osc7_accepts_this_machines_own_host_name() {
+    // The zsh/bash integration reports `file://<hostname>/<cwd>`; that is local, not remote.
+    // (It used to be compared against /proc/sys/kernel/hostname, so on macOS it never matched.)
+    let host = match super::perform::local_hostname() {
+        Some(h) if !h.contains('/') && !h.contains('%') => h,
+        _ => return,
+    };
+    let mut t = t(20, 3);
+    feed(&mut t, &format!("\x1b]7;file://{host}/tmp/here\x07"));
+    assert_eq!(t.cwd(), Some("/tmp/here"));
+}
+
+#[test]
 fn osc52_write_allowed_read_denied() {
     let mut t = t(20, 3);
     feed(&mut t, "\x1b]52;c;aGVsbG8=\x07");

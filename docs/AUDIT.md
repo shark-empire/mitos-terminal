@@ -44,7 +44,7 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 | Font selection | ⚠️ | config accepted and round-trips; only the bundled monospace font actually renders — see Limitations |
 | Ligatures | ⚠️ | config flag exists; egui's text layer has no OpenType shaper, so ligature glyphs never substitute — see Limitations |
 | Themes | ✅ | 7 aesthetic presets + 2 high-contrast variants + Custom, each with its own glow/glass/corner/effects personality — see **Theme Engine** below |
-| Transparency, glass, opacity | ✅ | `window.opacity`, transparent viewport, per-pane layered glass surface (`fx::paint_glass_surface`) over an ambient backdrop, with a near-opaque legibility floor behind the text grid |
+| Transparency, glass, opacity | ✅ | `window.opacity`, transparent viewport, per-pane layered glass surface (`fx::paint_glass_surface`) over an ambient backdrop, the text grid has exactly one background layer at the window opacity; the glass/backdrop look is confined to the padding margin (earlier builds put an opaque backdrop and a 232/255 "legibility floor" over the grid, which made the Opacity and Blur sliders look dead — see `docs/SETTINGS-REVIEW.md`) |
 | Background blur | ⚠️ | *simulated* frosted-glass strength (`appearance.blur`) is fully implemented and themed; a real compositor blur of the desktop behind the window is not — see Limitations |
 | Notifications | ✅ | OSC 9/9;4/777, rate-limited (`NotifyCfg`), desktop `notify-send` fallback |
 | Command completion integration | ✅ | ghost-text autocomplete via `mitos-file-manager` IPC (`ipc::request_autocomplete`) |
@@ -140,7 +140,7 @@ honest best-effort with a documented limitation; nothing is silently stubbed.
 
 ## Settings that parse but are not read yet
 These keys are accepted, saved and round-tripped by `config.rs`, but nothing consumes them, so changing them has no effect today:
-`font.fallbacks`, `font.ligatures`, `font.family` (only the bundled monospace font renders — see the Font selection and Ligatures rows), `effects.glitch` (no glitch effect exists), `appearance.wallpaper_path` (only the procedural backdrop is drawn — see the Wallpaper row), and a profile's `font_size` (there is one font size per window).
+`font.fallbacks`, `font.ligatures`, `font.family` (only the bundled monospace font renders — see the Font selection and Ligatures rows), `effects.glitch` (no glitch effect exists), `appearance.wallpaper_path` (only the procedural backdrop is drawn — see the Wallpaper row), a profile's `font_size` (there is one font size per window), and a profile's `theme` and `title`. (`selection.word_separators` and `scrollback.lines` used to be on this list without being documented: they are now pushed into every pane, on creation and on reload.)
 
 ## Theme Engine
 
@@ -169,7 +169,7 @@ only appearance settings).
 | Opacity, background blur, corner radius, glow, cursor style/blink, animations | ✅ | Settings → Appearance / Font & cursor; live values in `[window]`/`[appearance]`/`[cursor]`/`[effects]` |
 | Wallpaper | ⚠️ | procedural ambient backdrop (toggle in Appearance); image path accepted but not rendered — see Limitations |
 | Tab appearance | ✅ | `theme::TabStyle` (rounded/underline/boxed), rendered by `app.rs::paint_tab_decoration` |
-| Prompt style | ✅ | `theme::StatusStyle` — a terminal-drawn `user@host`/cwd strip (hidden/minimal/breadcrumb/segmented), independent of the shell's `$PS1`; drawn in the padding margin so it never costs grid space, and skipped automatically when padding is under 12px |
+| Prompt style | ✅ | `theme::StatusStyle` — a terminal-drawn `user@host`/cwd strip (hidden/minimal/breadcrumb/segmented), independent of the shell's `$PS1`; drawn in the padding margin so it never costs grid space, and the margin is raised to 16px whenever a status style other than hidden is selected (`Config::effective_padding`), because the strip is skipped below 12px and at the default padding of 8 it never appeared |
 | Presets | ✅ | `theme::THEME_PRESETS`; picking one seeds the live sliders (`Config::apply_theme_preset`) rather than owning them, so per-slider tweaks stay independent |
 | Reduced motion / disable animations | ✅ | `accessibility.reduced_motion`, `effects.enabled` |
 | High contrast | ✅ | `accessibility.high_contrast` → hand-tuned palettes |
@@ -191,3 +191,8 @@ Behaviour change worth knowing about: Matrix code rain (from the original
 cinematic layer) is now **opt-in** rather than on by default, since none of
 the presets in the brief call for it and the brief asks for something
 comfortable over hours of use.
+
+## Review after the first macOS test
+
+A code review after "some settings do not work on a Mac" is written up in
+[`SETTINGS-REVIEW.md`](SETTINGS-REVIEW.md): what each broken setting did, why, and what was changed.

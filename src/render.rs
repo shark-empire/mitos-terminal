@@ -205,6 +205,9 @@ pub struct PaintOpts<'a> {
     pub metrics: Metrics,
     pub font: FontId,
     pub focused: bool,
+    /// Whether the OS window itself has focus. `[cursor] unfocused` applies when it does not (and
+    /// to the cursor of a pane that is not the active one).
+    pub window_focused: bool,
     pub cursor_visible_phase: bool,
     pub unfocused_hollow: bool,
     pub cursor_thickness: f32,
@@ -267,63 +270,83 @@ pub fn paint_pane(
     let mut animating = false;
 
     // ----- outer chrome: ambient backdrop, glass/flat surface, glow, vignette, HUD ticks
-    let base_solid = (255.0 * opts.window_opacity.clamp(0.0, 1.0)) as u8;
-    if opts.blur > 0.01 {
-        if opts.wallpaper_enabled {
-            fx::paint_ambient_backdrop(
-                &painter,
-                rect,
-                opts.pane_seed,
-                theme.bg,
-                theme.accent,
-                theme.glow,
-            );
-        }
-        let surface_alpha = ((base_solid as f32) * (1.0 - opts.blur * 0.55)).max(40.0) as u8;
-        fx::paint_glass_surface(
-            &painter,
-            rect,
-            opts.corner_radius,
-            theme.surface,
-            surface_alpha,
-        );
-    } else {
-        painter.rect_filled(
-            rect,
-            opts.corner_radius,
-            Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], base_solid),
-        );
-    }
-    let glow_mul = if opts.focused { 1.0 } else { 0.45 };
-    fx::paint_glow_border(
-        &painter,
-        rect,
-        opts.corner_radius,
-        theme.glow,
-        opts.glow_intensity * glow_mul,
-    );
-    fx::paint_vignette(&painter, rect, opts.vignette);
-    if opts.hud_accents && opts.focused {
-        fx::paint_hud_accents(&painter, rect, theme.accent, 130);
-    }
-
-    // A near-opaque floor behind the text grid itself: the chrome above may
-    // be glassy, but "text remains extremely readable" (brief) is not
-    // negotiable, so the reading area never inherits the full transparency.
-    // Padding is capped relative to the pane's own size so a large
-    // `[window] padding` on a small pane can never invert the rect.
+    //
+    // The window opacity (`Config::effective_opacity`) is the alpha of the one background layer
+    // behind the text grid, and nothing opaque may sit on top of it: this used to paint an opaque
+    // ambient backdrop and then a "legibility floor" of at least 232/255 over the grid, so the
+    // Opacity and Blur settings changed next to nothing on screen. Now the text grid has exactly
+    // one background layer (`bg` at the opacity) and the glass look (backdrop + tinted surface) is
+    // confined to the padding margin around it. Text itself is always painted opaque, so
+    // transparency only ever affects the background; "Disable transparency" in the accessibility
+    // settings is the escape hatch for anyone who needs a solid backdrop.
+    //
+    // Padding is capped relative to the pane's own size so a large `[window] padding` on a small
+    // pane can never invert the rect.
+    let opacity = opts.window_opacity.clamp(0.0, 1.0);
+    let base_solid = (255.0 * opacity) as u8;
     let pad = opts
         .padding
         .max(0.0)
         .min(rect.width() * 0.4)
         .min(rect.height() * 0.4);
     let text_area = rect.shrink(pad);
-    let legibility_alpha = (base_solid as f32).max(232.0) as u8;
-    painter.rect_filled(
-        text_area,
-        (opts.corner_radius - pad).max(0.0),
-        Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], legibility_alpha),
+    let bg_fill =
+        Color32::from_rgba_unmultiplied(theme.bg[0], theme.bg[1], theme.bg[2], base_solid);
+    if opts.blur > 0.01 {
+        let surface_alpha = ((base_solid as f32) * (1.0 - opts.blur * 0.55)).max(40.0) as u8;
+        // The margin ring, as four strips that tile it exactly (top, bottom, left, right).
+        let ring = [
+            ERect::from_min_max(rect.left_top(), Pos2::new(rect.right(), text_area.top())),
+            ERect::from_min_max(Pos2::new(rect.left(), text_area.bottom()), rect.right_bottom()),
+            ERect::from_min_max(
+                Pos2::new(rect.left(), text_area.top()),
+                Pos2::new(text_area.left(), text_area.bottom()),
+            ),
+            ERect::from_min_max(
+                Pos2::new(text_area.right(), text_area.top()),
+                Pos2::new(rect.right(), text_area.bottom()),
+            ),
+        ];
+        for strip in ring {
+            if strip.width() < 0.5 || strip.height() < 0.5 {
+                continue;
+            }
+            let sp = painter.with_clip_rect(strip);
+            if opts.wallpaper_enabled {
+                fx::paint_ambient_backdrop(
+                    &sp,
+                    rect,
+                    opts.pane_seed,
+                    theme.bg,
+                    theme.accent,
+                    theme.glow,
+                    opacity,
+                );
+            }
+            fx::paint_glass_surface(&sp, rect, opts.corner_radius, theme.surface, surface_alpha);
+        }
+        painter.rect_filled(text_area, (opts.corner_radius - pad).max(0.0), bg_fill);
+    } else {
+        painter.rect_filled(rect, opts.corner_radius, bg_fill);
+    }
+    let glow_mul = if opts.focused { 1.0 } else { 0.45 };
+    // Drawn just inside the pane edge, in the padding margin. Strokes centred on (or outside)
+    // `rect` fall beyond this painter's clip rect, which left the Glow setting with only a
+    // half-pixel line to show for itself.
+    let glow_inset = (pad * 0.5).min(4.0);
+    fx::paint_glow_border(
+        &painter,
+        rect.shrink(glow_inset),
+        (opts.corner_radius - glow_inset).max(0.0),
+        theme.glow,
+        opts.glow_intensity * glow_mul,
     );
+    // Over the text grid's background (it used to be painted under an opaque layer and was
+    // therefore invisible), but still under the text.
+    fx::paint_vignette(&painter, rect, opts.vignette);
+    if opts.hud_accents && opts.focused {
+        fx::paint_hud_accents(&painter, rect, theme.accent, 130);
+    }
 
     // Terminal-drawn status/breadcrumb strip (`theme::StatusStyle`),
     // independent of the shell's own prompt: drawn inside the top padding
@@ -342,7 +365,7 @@ pub fn paint_pane(
     // Everything below this point already addresses its drawing relative to
     // `rect` — shadow it with the padded text area so the whole existing
     // grid/cursor/selection/widget painting logic lines up with the
-    // legibility floor above without having to touch each call site.
+    // text grid's background above without having to touch each call site.
     let rect = text_area;
 
     if let Some(rain) = rain {
@@ -536,10 +559,12 @@ pub fn paint_pane(
     }
 
     if term.modes.cursor_visible && cursor_row_visible && cx < cols && cy < rows {
-        let show = opts.focused || !opts.unfocused_hollow;
+        // `[cursor] unfocused`: "hollow" outlines the cursor and "same" keeps it filled while
+        // the window (or this pane) is not focused. The cursor is always drawn; the old test here
+        // hid it entirely for "hollow" and outlined it for "same", and ignored window focus.
         let blink_on =
             !term.cursor_style().blink || opts.reduced_motion || opts.cursor_visible_phase;
-        if show && blink_on {
+        if blink_on {
             let x = rect.left() + cx as f32 * m.char_w;
             let y = rect.top() + cy as f32 * m.row_h;
             let under_cell = term.view_row(cy).get(cx);
@@ -553,7 +578,7 @@ pub fn paint_pane(
                 true,
             );
             let cursor_color = c32(theme.cursor);
-            let filled = opts.focused;
+            let filled = (opts.focused && opts.window_focused) || !opts.unfocused_hollow;
             paint_cursor(
                 &painter,
                 Pos2::new(x, y),

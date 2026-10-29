@@ -14,7 +14,7 @@ documented best-effort rather than silently stubbed).
 
 ```
 src/
-  term/ bvf    saz1  §CVq  a`       the VT/xterm screen model — no GUI, no I/O, fully unit-tested12!  f  
+  term/            the VT/xterm screen model — no GUI, no I/O, fully unit-tested
     mod.rs         Term, events, policy, damage tracking, widgets
     cell.rs        Cell/Color/Pen/Row, attribute & mark bitflags
     modes.rs       terminal modes, cursor style, charsets
@@ -68,12 +68,15 @@ how it is built for macOS; see `docs/MACOS.md`.
 
 ## Configuration
 
-`~/.config/mitos/terminal.toml` — every table is optional; a partial or
-missing file just falls back to defaults, and a broken one is reported
-without crashing (see the in-app Settings window, or stderr on startup) and
-falls back to the last-known-good config. Every setting in the file is also
-live-editable from the Settings window (`Ctrl+,`), which writes changes back
-to this file.
+`~/.config/mitos/terminal.toml` (also `~/.config/mitos` on macOS; see
+`docs/MACOS.md`) — every table is optional; a partial or missing file just
+falls back to defaults, and a broken one is reported without crashing (a bar
+at the bottom of the window, the Settings window, and stderr on startup) and
+falls back to the last-known-good config. Most settings are also live-editable
+from the Settings window (`Ctrl+,`, `Cmd+,` on macOS), which writes changes
+back to this file and shows its path; a few keys (profiles, key bindings,
+scrollback size, word separators, link policy, notification thresholds, ...)
+are only editable in the file.
 
 ```toml
 [general]
@@ -143,6 +146,12 @@ without memorising a chord.
 | `Ctrl+V` / OS paste | Paste | | `Ctrl+Shift+H` | Command history |
 | `Ctrl+Shift+A` | Select all | | `Ctrl+,` | Settings |
 | `Ctrl+Click` | Open link (configurable) | | `F11` | Fullscreen |
+
+On macOS the Command key is used as well (`Cmd+T`, `Cmd+W`, `Cmd+D`, `Cmd+F`, `Cmd+K`, `Cmd+,`,
+`Cmd+1`–`9` instead of `Alt+1`–`9`, `Cmd+Click` for links, `Ctrl+Cmd+F` for full screen, ...; the
+plain `Ctrl+F/G/=/-` defaults are left to the shell there); see
+`docs/MACOS.md`. A chord bound to one of these actions is not also sent to the program running in
+the pane.
 
 ## Themes
 

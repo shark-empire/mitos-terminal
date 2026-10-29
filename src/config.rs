@@ -7,6 +7,10 @@
 //! * `~/.config/mitos/home.conf` — system-wide look & feel shared with the rest
 //!   of MITOS (`theme_mode`, `accent_color`, `matrix_rain`). Read for backwards
 //!   compatibility; `terminal.toml` wins where both speak.
+//!
+//! The directory is `$XDG_CONFIG_HOME/mitos` (default `~/.config/mitos`). On macOS see
+//! [`config_dir`]: `~/.config/mitos` is used there too, and an older
+//! `~/Library/Application Support/mitos` is still honoured when it is the only one.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,11 +24,57 @@ use crate::theme::{parse_hex, Rgb, Theme};
 
 pub const MIN_FONT: f32 = 6.0;
 pub const MAX_FONT: f32 = 72.0;
+/// Smallest pane margin (logical points) that has room for the status strip.
+pub const STATUS_STRIP_MIN_PADDING: f32 = 16.0;
 
+/// Where `terminal.toml` and `home.conf` live.
+///
+/// Linux and the BSDs: `$XDG_CONFIG_HOME/mitos` (default `~/.config/mitos`), which is what
+/// `dirs::config_dir()` returns there.
+///
+/// macOS: `dirs::config_dir()` alone points at `~/Library/Application Support`, but the README,
+/// the example config and the Settings window all say `~/.config/mitos`, so a file put there was
+/// silently ignored. On macOS this therefore picks, in order: `$XDG_CONFIG_HOME/mitos` when that
+/// variable is set to an absolute path; `~/Library/Application Support/mitos` when it already holds
+/// a config file and `~/.config/mitos` does not (so existing setups keep working); and otherwise
+/// `~/.config/mitos`.
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("mitos")
+    #[cfg(target_os = "macos")]
+    {
+        macos_config_dir()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from(".config"))
+            .join("mitos")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_config_dir() -> PathBuf {
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
+        let p = PathBuf::from(x);
+        if p.is_absolute() {
+            return p.join("mitos");
+        }
+    }
+    let has_config =
+        |d: &std::path::Path| d.join("terminal.toml").is_file() || d.join("home.conf").is_file();
+    let xdg = dirs::home_dir().map(|h| h.join(".config").join("mitos"));
+    let native = dirs::config_dir().map(|c| c.join("mitos"));
+    match (xdg, native) {
+        (Some(x), Some(n)) => {
+            if !has_config(&x) && has_config(&n) {
+                n
+            } else {
+                x
+            }
+        }
+        (Some(x), None) => x,
+        (None, Some(n)) => n,
+        (None, None) => PathBuf::from(".config/mitos"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -44,8 +94,14 @@ pub struct General {
     pub smooth_scroll: bool,
     /// `"auto"` (only with >1 tab), `"always"` or `"never"`.
     pub tab_bar: String,
-    /// Inject OSC 133/7 shell integration into bash automatically.
+    /// Inject OSC 133/7 shell integration automatically: into bash everywhere, and into zsh on
+    /// macOS (where it is the default shell). Takes effect for panes opened afterwards.
     pub shell_integration: bool,
+    /// macOS only: treat Option as Meta (Option+b sends `ESC b`, so Option+Left/Right word
+    /// movement and `Alt-`bindings work in readline/zle). Off by default because Option is what
+    /// types `@`, `|`, `[`, `{`, `\` and accented characters on most non-US layouts. On other
+    /// platforms Alt is always Meta.
+    pub option_as_meta: bool,
 }
 
 impl Default for General {
@@ -59,6 +115,7 @@ impl Default for General {
             smooth_scroll: true,
             tab_bar: "auto".into(),
             shell_integration: true,
+            option_as_meta: false,
         }
     }
 }
@@ -349,7 +406,9 @@ pub struct SelectionCfg {
     /// Also publish the selection as the X11/Wayland PRIMARY selection.
     pub primary_selection: bool,
     pub middle_click_paste: bool,
-    /// With a selection, Ctrl+C copies instead of interrupting.
+    /// With a selection, Ctrl+C copies instead of interrupting. Off by default on macOS, where
+    /// Cmd+C is the copy key and a leftover selection must never turn Ctrl+C into a copy that
+    /// leaves the program running.
     pub ctrl_c_copies: bool,
 }
 
@@ -360,7 +419,7 @@ impl Default for SelectionCfg {
             copy_on_select: false,
             primary_selection: true,
             middle_click_paste: true,
-            ctrl_c_copies: true,
+            ctrl_c_copies: !cfg!(target_os = "macos"),
         }
     }
 }
@@ -601,7 +660,10 @@ impl Config {
         match std::fs::read_to_string(Self::path()) {
             Ok(text) => match Config::parse(&text) {
                 Ok(c) => (c, None),
-                Err(e) => (Config::default(), Some(format!("terminal.toml: {e}"))),
+                Err(e) => (
+                    Config::default(),
+                    Some(format!("{}: {e}", Self::path().display())),
+                ),
             },
             Err(_) => (Config::default(), None),
         }
@@ -821,6 +883,20 @@ impl Config {
         self.effects.sweep = matches!(base.id.as_str(), "futuristic-scifi" | "glass-neon");
     }
 
+    /// Margin between a pane's edge and its text grid. The terminal-drawn status strip lives in
+    /// that margin and is skipped when it is thinner than [`STATUS_STRIP_MIN_PADDING`] (the strip
+    /// is never allowed to cost grid space), so with a status style other than `hidden` selected
+    /// the margin is raised to that minimum; otherwise the Prompt / status style setting would do
+    /// nothing at the default padding of 8.
+    pub fn effective_padding(&self) -> f32 {
+        let p = self.window.padding;
+        if self.appearance.status_style() != crate::theme::StatusStyle::Hidden {
+            p.max(STATUS_STRIP_MIN_PADDING)
+        } else {
+            p
+        }
+    }
+
     /// Live window opacity with `[accessibility] disable_transparency`
     /// applied. Always call this rather than reading `window.opacity`
     /// directly wherever transparency is actually painted — the point of
@@ -906,9 +982,15 @@ impl HomeConf {
     }
 
     pub fn load() -> HomeConf {
-        std::fs::read_to_string(Self::path())
+        let mut h = std::fs::read_to_string(Self::path())
             .map(|c| HomeConf::parse(&c))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // `[theme] follow_system` reads `theme_mode`; on macOS that comes from the system
+        // appearance unless home.conf sets it explicitly.
+        if h.theme_mode.is_none() {
+            h.theme_mode = system_theme_mode();
+        }
+        h
     }
 
     /// Persist `matrix_rain=` in home.conf, keeping every other line untouched.
@@ -938,6 +1020,31 @@ impl HomeConf {
         out.push('\n');
         let _ = std::fs::write(&path, out);
     }
+}
+
+/// The macOS appearance as `"dark"` or `"light"`, so `[theme] follow_system` follows the system
+/// setting there. `defaults read -g AppleInterfaceStyle` prints `Dark` in dark mode and fails (the
+/// key does not exist) in light mode. Other platforms have no such query; they use `home.conf`.
+#[cfg(target_os = "macos")]
+pub fn system_theme_mode() -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mode = if text.trim().eq_ignore_ascii_case("dark") {
+        "dark"
+    } else {
+        "light"
+    };
+    Some(mode.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn system_theme_mode() -> Option<String> {
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,6 +1198,9 @@ pub struct Chord {
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
+    /// The macOS Command key (`cmd+t`). Key events on other platforms never carry it, so a chord
+    /// with `cmd` simply never fires there.
+    pub cmd: bool,
 }
 
 fn is_plus_or_equals(k: Key) -> bool {
@@ -1099,12 +1209,26 @@ fn is_plus_or_equals(k: Key) -> bool {
 
 impl Chord {
     /// `+` and `=` share a physical key, so Ctrl+= and Ctrl++ are the same chord.
+    /// (Compares without the Command key; see [`Chord::matches_with_cmd`].)
     pub fn matches(&self, key: Key, ctrl: bool, shift: bool, alt: bool) -> bool {
+        self.matches_with_cmd(key, ctrl, shift, alt, false)
+    }
+
+    /// Like [`Chord::matches`] but also compares the macOS Command key.
+    pub fn matches_with_cmd(
+        &self,
+        key: Key,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+        cmd: bool,
+    ) -> bool {
         let key_ok = self.key == key || (is_plus_or_equals(self.key) && is_plus_or_equals(key));
         key_ok
             && self.ctrl == ctrl
             && self.alt == alt
-            && (self.shift == shift || (is_plus_or_equals(self.key) && shift && ctrl))
+            && self.cmd == cmd
+            && (self.shift == shift || (is_plus_or_equals(self.key) && shift && (ctrl || cmd)))
     }
 }
 
@@ -1221,6 +1345,7 @@ pub fn parse_chord(s: &str) -> Option<Chord> {
     let mut ctrl = false;
     let mut shift = false;
     let mut alt = false;
+    let mut cmd = false;
     let mut key: Option<Key> = None;
     for part in s.split('+') {
         let p = part.trim().to_ascii_lowercase();
@@ -1228,6 +1353,7 @@ pub fn parse_chord(s: &str) -> Option<Chord> {
             "ctrl" | "control" => ctrl = true,
             "shift" => shift = true,
             "alt" | "option" => alt = true,
+            "cmd" | "command" | "super" | "meta" => cmd = true,
             "" => {
                 // a literal '+' key at the end ("ctrl++")
                 key = key_from_name("equals");
@@ -1241,11 +1367,15 @@ pub fn parse_chord(s: &str) -> Option<Chord> {
         ctrl,
         shift,
         alt,
+        cmd,
     })
 }
 
 pub fn chord_to_string(c: &Chord) -> String {
     let mut parts: Vec<&str> = Vec::new();
+    if c.cmd {
+        parts.push("cmd");
+    }
     if c.ctrl {
         parts.push("ctrl");
     }
@@ -1298,17 +1428,76 @@ pub fn default_bindings() -> Vec<(&'static str, Action)> {
         ("ctrl+comma", Action::Settings),
         ("f11", Action::Fullscreen),
     ];
+    // Alt+1-9 go to tab N, except on macOS: there Option+digit types characters (`|`, `{`, `[`,
+    // `]`, `@`, ... depending on the layout), so binding it would make them untypeable. Cmd+1-9 is
+    // the macOS convention (see `mac_bindings`).
+    if !cfg!(target_os = "macos") {
+        for n in 1u8..=9 {
+            let s: &'static str = match n {
+                1 => "alt+1",
+                2 => "alt+2",
+                3 => "alt+3",
+                4 => "alt+4",
+                5 => "alt+5",
+                6 => "alt+6",
+                7 => "alt+7",
+                8 => "alt+8",
+                _ => "alt+9",
+            };
+            v.push((s, Action::GotoTab(n)));
+        }
+    }
+    if cfg!(target_os = "macos") {
+        // Plain Ctrl chords that are readline/zle keys: Ctrl+F forward-char, Ctrl+G abort, Ctrl+-
+        // undo. A bound chord is no longer also sent to the shell, so leaving these bound would
+        // take those keys away on a Mac, where the Cmd forms below replace them.
+        const READLINE_KEYS: [&str; 4] = ["ctrl+f", "ctrl+g", "ctrl+equals", "ctrl+minus"];
+        v.retain(|(s, _)| !READLINE_KEYS.contains(s));
+        // The Command-key forms go first so menus and the command palette show them on a Mac;
+        // the other Ctrl-based chords above keep working there too.
+        let mut with_mac = mac_bindings();
+        with_mac.extend(v);
+        return with_mac;
+    }
+    v
+}
+
+/// macOS Command-key equivalents (iTerm2 / Terminal.app habits). Copy and paste are not listed:
+/// egui turns Cmd+C / Cmd+V into copy / paste events, which `app.rs` handles directly.
+fn mac_bindings() -> Vec<(&'static str, Action)> {
+    let mut v: Vec<(&'static str, Action)> = vec![
+        ("cmd+t", Action::NewTab),
+        ("cmd+n", Action::NewWindow),
+        ("cmd+w", Action::ClosePane),
+        ("cmd+shift+w", Action::CloseTab),
+        ("cmd+d", Action::SplitRight),
+        ("cmd+shift+d", Action::SplitDown),
+        ("cmd+a", Action::SelectAll),
+        ("cmd+f", Action::Find),
+        ("cmd+g", Action::FindNext),
+        ("cmd+shift+g", Action::FindPrev),
+        ("cmd+equals", Action::ZoomIn),
+        ("cmd+minus", Action::ZoomOut),
+        ("cmd+0", Action::ZoomReset),
+        ("cmd+k", Action::ClearScrollback),
+        ("cmd+shift+p", Action::CommandPalette),
+        ("cmd+comma", Action::Settings),
+        ("cmd+up", Action::PrevPrompt),
+        ("cmd+down", Action::NextPrompt),
+        // F11 is "Show Desktop" on macOS and never reaches the app; this is the system chord.
+        ("ctrl+cmd+f", Action::Fullscreen),
+    ];
     for n in 1u8..=9 {
         let s: &'static str = match n {
-            1 => "alt+1",
-            2 => "alt+2",
-            3 => "alt+3",
-            4 => "alt+4",
-            5 => "alt+5",
-            6 => "alt+6",
-            7 => "alt+7",
-            8 => "alt+8",
-            _ => "alt+9",
+            1 => "cmd+1",
+            2 => "cmd+2",
+            3 => "cmd+3",
+            4 => "cmd+4",
+            5 => "cmd+5",
+            6 => "cmd+6",
+            7 => "cmd+7",
+            8 => "cmd+8",
+            _ => "cmd+9",
         };
         v.push((s, Action::GotoTab(n)));
     }
@@ -1585,6 +1774,55 @@ mod tests {
             !t.matches(Key::T, true, false, false),
             "modifiers must match exactly"
         );
+    }
+
+    #[test]
+    fn command_key_chords_parse_and_match() {
+        let c = parse_chord("cmd+shift+t").unwrap();
+        assert!(c.cmd && c.shift && !c.ctrl && !c.alt);
+        assert_eq!(chord_to_string(&c), "cmd+shift+t");
+        assert!(c.matches_with_cmd(Key::T, false, true, false, true));
+        assert!(
+            !c.matches_with_cmd(Key::T, false, true, false, false),
+            "the Command key is required"
+        );
+        let plain = parse_chord("ctrl+shift+t").unwrap();
+        assert!(
+            !plain.matches_with_cmd(Key::T, true, true, false, true),
+            "an extra Command key must not match a Ctrl chord"
+        );
+        assert_eq!(
+            parse_chord("command+comma").unwrap(),
+            parse_chord("cmd+comma").unwrap()
+        );
+        let zoom = parse_chord("cmd+equals").unwrap();
+        assert!(
+            zoom.matches_with_cmd(Key::Equals, false, true, false, true),
+            "Cmd++ is Cmd+="
+        );
+    }
+
+    #[test]
+    fn mac_default_bindings_parse_and_stay_distinct() {
+        let mut seen = std::collections::HashSet::new();
+        for (s, _) in mac_bindings() {
+            let c = parse_chord(s).unwrap_or_else(|| panic!("unparsable mac binding {s}"));
+            assert!(c.cmd, "{s} should use the Command key");
+            assert!(seen.insert(chord_to_string(&c)), "{s} bound twice");
+        }
+    }
+
+    #[test]
+    fn status_strip_gets_the_margin_it_needs() {
+        let mut c = Config::default();
+        c.window.padding = 8.0;
+        c.appearance.status_style = "breadcrumb".into();
+        assert_eq!(c.effective_padding(), STATUS_STRIP_MIN_PADDING);
+        c.appearance.status_style = "hidden".into();
+        assert_eq!(c.effective_padding(), 8.0);
+        c.appearance.status_style = "minimal".into();
+        c.window.padding = 30.0;
+        assert_eq!(c.effective_padding(), 30.0);
     }
 
     #[test]

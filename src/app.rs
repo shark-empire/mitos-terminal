@@ -199,6 +199,9 @@ pub struct TerminalApp {
     pending_paste: Option<PendingPaste>,
     pending_link: Option<PendingLink>,
     pending_close: Option<PaneId>,
+    /// Name of the foreground job the close dialog asks about, looked up once when the dialog
+    /// opens (on macOS that costs a process spawn, so it must not happen every frame).
+    pending_close_name: Option<String>,
     pending_widget: Option<PendingWidget>,
     /// The cursor style last pushed into every pane's `Term` as its default (see
     /// `sync_cursor_default_to_panes`).
@@ -209,6 +212,10 @@ pub struct TerminalApp {
     last_bell: f64,
     bell_flash: Option<(PaneId, f64)>,
     startup_errors: Vec<String>,
+    /// Show the dismissible "configuration problem" bar. Set whenever loading or reloading the
+    /// config reports an error, so a broken terminal.toml is visible instead of silently turning
+    /// every setting back to its default.
+    show_error_bar: bool,
     frame_count: u64,
     fullscreen: bool,
     notify_times: std::collections::VecDeque<f64>,
@@ -257,6 +264,7 @@ fn new_pane(
         t.set_theme_colors(resolved.fg, resolved.bg, resolved.cursor, resolved.ansi);
         // The configured cursor shape/blink is the pane's default (DECSCUSR 0 returns to it).
         t.set_default_cursor_style(config.cursor.style());
+        t.word_separators = config.selection.word_separators.clone();
     }
     let rain = if config.rain_enabled(home) {
         Some(fx::CodeRain::new(10.0, 0.55))
@@ -285,9 +293,14 @@ impl TerminalApp {
 
         let mut startup_errors: Vec<String> = Vec::new();
         if let Some(e) = cfg_err {
+            eprintln!("[mitos-terminal] {e}\n[mitos-terminal] using the built-in defaults instead");
             startup_errors.push(e);
         }
+        for p in &keymap_problems {
+            eprintln!("[mitos-terminal] {p}");
+        }
         startup_errors.extend(keymap_problems);
+        let show_error_bar = !startup_errors.is_empty();
 
         let font = render::font_id(&config.font.family, config.font.size);
 
@@ -313,6 +326,9 @@ impl TerminalApp {
 
         let config_dirty = Arc::new(AtomicBool::new(false));
         let watcher = spawn_config_watcher(Arc::clone(&config_dirty), cc.egui_ctx.clone());
+        // `[theme] follow_system` on macOS: notice the system switching between light and dark.
+        #[cfg(target_os = "macos")]
+        spawn_appearance_watcher(Arc::clone(&config_dirty), cc.egui_ctx.clone());
         let cursor_default = config.cursor.style();
 
         TerminalApp {
@@ -343,12 +359,14 @@ impl TerminalApp {
             pending_paste: None,
             pending_link: None,
             pending_close: None,
+            pending_close_name: None,
             pending_widget: None,
             cursor_default,
             wheel_residual: 0.0,
             last_bell: f64::NEG_INFINITY,
             bell_flash: None,
             startup_errors,
+            show_error_bar,
             frame_count: 0,
             fullscreen: false,
             notify_times: std::collections::VecDeque::new(),
@@ -363,11 +381,18 @@ impl TerminalApp {
         let (config, err) = Config::load();
         self.home = HomeConf::load();
         if let Some(e) = err {
-            self.startup_errors.push(e);
+            eprintln!("[mitos-terminal] {e}\n[mitos-terminal] keeping the previous settings");
+            self.startup_errors = vec![e];
+            self.show_error_bar = true;
             return; // keep the previous, valid config
         }
         let (keymap, problems) = config::build_keymap(&config.keybindings);
-        self.startup_errors.extend(problems);
+        for p in &problems {
+            eprintln!("[mitos-terminal] {p}");
+        }
+        // A reload that parses cleanly retires the previous file error.
+        self.show_error_bar = !problems.is_empty();
+        self.startup_errors = problems;
         self.config = config;
         self.theme = self.config.theme(&self.home);
         self.sync_theme_colors_to_panes();
@@ -388,6 +413,19 @@ impl TerminalApp {
             let policy = self.config.term_policy();
             if let Ok(mut t) = pane.session.term().lock() {
                 t.set_policy(policy);
+            }
+        }
+        self.sync_term_settings_to_panes();
+    }
+
+    /// Push the selection and scrollback settings into every live pane's `Term`. Panes only read
+    /// them when they are created, so without this a change (in the file or the Settings window)
+    /// would never reach tabs that are already open.
+    fn sync_term_settings_to_panes(&self) {
+        for pane in self.panes.values() {
+            if let Ok(mut t) = pane.session.term().lock() {
+                t.word_separators = self.config.selection.word_separators.clone();
+                t.scrollback_limit = self.config.scrollback.lines;
             }
         }
     }
@@ -521,6 +559,7 @@ impl TerminalApp {
             .unwrap_or(false);
         if self.config.general.confirm_close_running && running_job {
             self.pending_close = Some(pane_id);
+            self.pending_close_name = None;
         } else {
             self.close_pane(ctx, pane_id);
         }
@@ -772,7 +811,17 @@ impl TerminalApp {
                             crate::a11y::ring_bell();
                         }
                         if self.config.bell.urgent {
-                            crate::platform::request_urgent("MITOS Terminal");
+                            if cfg!(target_os = "macos") {
+                                // wmctrl does not exist here; ask for the Dock icon to bounce
+                                // (macOS ignores this while the app is already in front).
+                                if !self.window_focused {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                                        egui::UserAttentionType::Informational,
+                                    ));
+                                }
+                            } else {
+                                crate::platform::request_urgent("MITOS Terminal");
+                            }
                         }
                     }
                 }
@@ -927,9 +976,9 @@ fn color_override_row(
         let mut text = override_field
             .clone()
             .unwrap_or_else(|| theme::to_hex(fallback));
-        let edited = ui
-            .add(egui::TextEdit::singleline(&mut text).desired_width(72.0))
-            .changed();
+        let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(72.0));
+        note_text_focus(ui.ctx(), &field);
+        let edited = field.changed();
         if edited && theme::parse_hex(&text).is_some() {
             *override_field = Some(text);
             changed = true;
@@ -942,15 +991,69 @@ fn color_override_row(
     changed
 }
 
+/// Remember that one of the app's own text fields (find bar, Settings colour boxes) has keyboard
+/// focus this frame. egui leaves typed text in the input queue for everyone, so without this the
+/// pane in front also received every key typed into those fields (and Enter ran whatever was on the
+/// prompt).
+fn note_text_focus(ctx: &egui::Context, resp: &egui::Response) {
+    if resp.has_focus() {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("mitos_text_input_focus"), true));
+    }
+}
+
+fn clear_text_focus(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("mitos_text_input_focus"), false));
+}
+
+fn text_focus_noted(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("mitos_text_input_focus")))
+        .unwrap_or(false)
+}
+
+/// One-line form of a (usually multi-line) TOML error for the in-window problem bar: the first
+/// line says where, the last says what.
+fn summarize_error(e: &str) -> String {
+    let mut lines = e.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or("").to_string();
+    match lines.next_back() {
+        Some(last) if last != first => format!("{first} \u{2014} {last}"),
+        _ => first,
+    }
+}
+
+/// macOS: poll the system appearance and ask for a reload when it flips, so `[theme]
+/// follow_system` follows light/dark mode while the terminal is running. (It runs `defaults`,
+/// which is cheap but still belongs off the UI thread.)
+#[cfg(target_os = "macos")]
+fn spawn_appearance_watcher(dirty: Arc<AtomicBool>, ctx: egui::Context) {
+    std::thread::spawn(move || {
+        let mut last = config::system_theme_mode();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            // The app (and the config watcher) hold the other references; once they are gone
+            // this thread has nobody to tell.
+            if Arc::strong_count(&dirty) <= 1 {
+                break;
+            }
+            let now = config::system_theme_mode();
+            if now != last {
+                last = now;
+                dirty.store(true, Ordering::Relaxed);
+                ctx.request_repaint();
+            }
+        }
+    });
+}
+
 /// `user@host` for the status-strip chrome. Best-effort: an empty piece is
 /// simply omitted rather than shown as "unknown".
 fn local_user_host() -> String {
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_default();
-    let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+    // gethostname(3), not /proc (macOS has none); macOS appends `.local`, which is just noise here.
+    let host = crate::platform::hostname().unwrap_or_default();
+    let host = host.strip_suffix(".local").unwrap_or(&host).to_string();
     match (user.is_empty(), host.is_empty()) {
         (false, false) => format!("{user}@{host}"),
         (false, true) => user,
@@ -1064,7 +1167,8 @@ impl eframe::App for TerminalApp {
             self.keymap
                 .iter()
                 .filter(|(c, _)| {
-                    i.key_pressed(c.key) && c.matches(c.key, mods.ctrl, mods.shift, mods.alt)
+                    i.key_pressed(c.key)
+                        && c.matches_with_cmd(c.key, mods.ctrl, mods.shift, mods.alt, mods.mac_cmd)
                 })
                 .map(|(_, a)| *a)
                 .collect()
@@ -1075,6 +1179,7 @@ impl eframe::App for TerminalApp {
         }
 
         // ----- dialogs -------------------------------------------------
+        clear_text_focus(ctx);
         self.show_settings_window(ctx);
         self.show_command_palette(ctx);
         self.show_paste_confirm(ctx);
@@ -1087,12 +1192,37 @@ impl eframe::App for TerminalApp {
                 ui.horizontal(|ui| {
                     ui.label("\u{1F50D}");
                     let resp = ui.text_edit_singleline(&mut self.search_query);
+                    note_text_focus(ctx, &resp);
                     if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                         resp.request_focus();
                     }
                     if ui.button("\u{2716}").clicked() {
                         self.search_active = false;
                         self.search_query.clear();
+                    }
+                });
+            });
+        }
+
+        // ----- configuration problems ---------------------------------
+        if self.show_error_bar && !self.startup_errors.is_empty() {
+            let msg = summarize_error(&self.startup_errors[0]);
+            let more = self.startup_errors.len().saturating_sub(1);
+            egui::TopBottomPanel::bottom("config_problems").show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        Color32::from_rgb(235, 140, 100),
+                        "\u{26A0} Configuration problem:",
+                    );
+                    ui.label(msg);
+                    if more > 0 {
+                        ui.label(format!("(+{more} more)"));
+                    }
+                    if ui.small_button("Details").clicked() {
+                        self.show_settings = true;
+                    }
+                    if ui.small_button("Dismiss").clicked() {
+                        self.show_error_bar = false;
                     }
                 });
             });
@@ -1172,15 +1302,19 @@ impl eframe::App for TerminalApp {
 
         // ----- central panel: the pane grid --------------------------------
         let bg = self.theme.bg;
-        let panel_alpha = (self.config.effective_opacity() * 255.0) as u8;
+        // A solid window lets the panel supply the (opaque) background, which also fills the
+        // corners that rounded panes leave. A see-through window must keep the panel empty: each
+        // pane paints its own single background layer at the window opacity (`render::paint_pane`),
+        // and a second translucent layer underneath would make the window look more opaque than
+        // the Opacity setting says.
+        let panel_fill = if self.config.effective_opacity() >= 0.999 {
+            Color32::from_rgb(bg[0], bg[1], bg[2])
+        } else {
+            Color32::TRANSPARENT
+        };
         let mut auto_close: Vec<PaneId> = Vec::new();
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(Color32::from_rgba_unmultiplied(
-                bg[0],
-                bg[1],
-                bg[2],
-                panel_alpha,
-            )))
+            .frame(egui::Frame::none().fill(panel_fill))
             .show(ctx, |ui| {
                 let area = ui.max_rect();
                 let cell = self.metrics;
@@ -1194,7 +1328,10 @@ impl eframe::App for TerminalApp {
                 let reduced = self.config.reduced_motion(&self.home);
                 let unfocused_hollow = self.config.cursor.unfocused == "hollow";
                 let thickness = self.config.cursor.thickness;
-                let padding = self.config.window.padding;
+                let window_focused = self.window_focused;
+                // Raised to what the status strip needs when one is selected (see
+                // `Config::effective_padding`); the mouse mapping uses the same value.
+                let padding = self.config.effective_padding();
                 let corner_radius = self.config.appearance.corner_radius;
                 let window_opacity = self.config.effective_opacity();
                 let blur = self.config.effective_blur();
@@ -1266,7 +1403,7 @@ impl eframe::App for TerminalApp {
 
                     self.handle_pane_mouse(ctx, &resp, pane_id, px, cell, cols);
                     self.pane_menu(ctx, &resp, pane_id);
-                    if focused {
+                    if focused && !self.show_palette && !text_focus_noted(ctx) {
                         self.handle_pane_keyboard(ctx, pane_id);
                     }
 
@@ -1278,6 +1415,7 @@ impl eframe::App for TerminalApp {
                                 metrics: cell,
                                 font: self.font.clone(),
                                 focused,
+                                window_focused,
                                 cursor_visible_phase: pane.blink_on,
                                 unfocused_hollow,
                                 cursor_thickness: thickness,
@@ -1626,13 +1764,12 @@ impl TerminalApp {
         cols: usize,
     ) {
         // Same padding math as the paint loop in `update()` — the text grid
-        // is inset from the pane's own rect by `[window] padding`, so mouse
-        // coordinates need the same offset subtracted before they line up
-        // with a column/row.
+        // is inset from the pane's own rect by the (effective) window padding,
+        // so mouse coordinates need the same offset subtracted before they line
+        // up with a column/row.
         let pad = self
             .config
-            .window
-            .padding
+            .effective_padding()
             .max(0.0)
             .min(px.width() * 0.4)
             .min(px.height() * 0.4);
@@ -1728,7 +1865,10 @@ impl TerminalApp {
             let want_link = ctx.input(|i| match links_cfg.mode.as_str() {
                 "click" => true,
                 "off" => false,
-                _ => i.modifiers.ctrl,
+                // "ctrl_click": Ctrl+click, or Cmd+click on macOS. (macOS turns Ctrl+click into a
+                // right-click, so the Ctrl form can never work there.) `command` is Cmd on macOS
+                // and Ctrl everywhere else.
+                _ => i.modifiers.command,
             });
             if want_link {
                 if let Some(pos) = resp.interact_pointer_pos() {
@@ -1792,7 +1932,12 @@ impl TerminalApp {
                 i.raw_scroll_delta.y
             }
         });
-        self.wheel_residual += (scroll / row_h.max(1.0)) * self.config.scrollback.wheel_lines;
+        // `wheel_lines` is "lines per mouse-wheel notch" and egui reports a notch as 50 points, so
+        // divide by that: dividing by the row height instead made a notch scroll about three times
+        // `wheel_lines` lines, and a trackpad about three times faster than the content moves under
+        // the finger. (`row_h` stays in the signature for the callers.)
+        let _ = row_h;
+        self.wheel_residual += (scroll / 50.0) * self.config.scrollback.wheel_lines;
         let whole = self.wheel_residual.trunc();
         self.wheel_residual -= whole;
         whole as isize
@@ -1807,52 +1952,110 @@ impl TerminalApp {
         let has_selection = self
             .with_pane_term_ret(pane_id, |t| t.has_selection())
             .unwrap_or(false);
+        // macOS: Option composes characters (`@`, `|`, `[`, `{`, accents, ... on most non-US
+        // layouts), so it must NOT be turned into an ESC prefix unless the user opted in to
+        // Option-as-Meta. Everywhere else Alt is always Meta.
+        let alt_is_meta = !cfg!(target_os = "macos") || self.config.general.option_as_meta;
 
         let mut outgoing: Vec<u8> = Vec::new();
         let mut do_copy = false;
         let mut do_paste: Option<String> = None;
+        let mut paste_clipboard = false;
 
-        ctx.input(|i| {
-            for event in &i.events {
-                match event {
-                    egui::Event::Text(text) => {
-                        if text.chars().any(|c| c.is_control()) {
-                            continue;
+        {
+            let keymap = &self.keymap;
+            ctx.input(|i| {
+                // A chord bound to an app action (new tab, scroll a page, zoom, ...) belongs to the
+                // terminal UI, not to the program in the pane. It used to be forwarded to the shell
+                // as well, so Shift+PageUp scrolled *and* typed `;2~`, and Ctrl+Tab switched tabs
+                // *and* sent a Tab (completion).
+                let bound = |key: &egui::Key, m: &egui::Modifiers| -> bool {
+                    keymap
+                        .iter()
+                        .any(|(c, _)| c.matches_with_cmd(*key, m.ctrl, m.shift, m.alt, m.mac_cmd))
+                };
+                // An Alt chord (Alt+1 for tab 1) also produces a text event ("1"); drop that too.
+                let alt_chord_pressed = i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key { key, pressed: true, modifiers, .. }
+                            if modifiers.alt && bound(key, modifiers)
+                    )
+                });
+                // Set when Option-as-Meta already sent a key, so its composed text is skipped.
+                let mut meta_key_sent = false;
+                for event in &i.events {
+                    match event {
+                        egui::Event::Text(text) => {
+                            if alt_chord_pressed && i.modifiers.alt {
+                                continue;
+                            }
+                            if meta_key_sent {
+                                meta_key_sent = false;
+                                continue;
+                            }
+                            if text.chars().any(|c| c.is_control()) {
+                                continue;
+                            }
+                            outgoing.extend(input::encode_text(
+                                text,
+                                i.modifiers.alt && !i.modifiers.ctrl && alt_is_meta,
+                            ));
                         }
-                        outgoing.extend(input::encode_text(
-                            text,
-                            i.modifiers.alt && !i.modifiers.ctrl,
-                        ));
+                        egui::Event::Key {
+                            key,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } => {
+                            meta_key_sent = false;
+                            if bound(key, modifiers) {
+                                continue;
+                            }
+                            let mods = Mods::from_egui(modifiers);
+                            if *key == egui::Key::C && mods.ctrl && mods.shift {
+                                do_copy = true;
+                                continue;
+                            }
+                            if *key == egui::Key::C && mods.ctrl && ctrl_c_copies && has_selection {
+                                do_copy = true;
+                                continue;
+                            }
+                            // Ctrl+Shift+V pastes. On Linux egui turns it into a paste event
+                            // itself; on macOS only Cmd+V is, so it is handled here.
+                            if *key == egui::Key::V && mods.ctrl && mods.shift {
+                                paste_clipboard = true;
+                                continue;
+                            }
+                            if *key == egui::Key::V && mods.ctrl && ctrl_v_pastes {
+                                continue; // handled via Event::Paste below
+                            }
+                            // Option-as-Meta: the key itself (not the composed text) says which
+                            // letter to send after the ESC.
+                            if cfg!(target_os = "macos") && alt_is_meta && mods.alt && !mods.ctrl {
+                                if let Some(ch) = input::meta_base_char(*key, mods.shift) {
+                                    outgoing.push(0x1b);
+                                    let mut buf = [0u8; 4];
+                                    outgoing.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                                    meta_key_sent = true;
+                                    continue;
+                                }
+                            }
+                            if let Some(bytes) = input::encode_key(*key, mods, app_cursor) {
+                                outgoing.extend(bytes);
+                            }
+                        }
+                        egui::Event::Paste(text) => do_paste = Some(text.clone()),
+                        egui::Event::Copy => do_copy = true,
+                        _ => {}
                     }
-                    egui::Event::Key {
-                        key,
-                        pressed: true,
-                        modifiers,
-                        ..
-                    } => {
-                        let mods = Mods::from_egui(modifiers);
-                        if *key == egui::Key::C && mods.ctrl && mods.shift {
-                            do_copy = true;
-                            continue;
-                        }
-                        if *key == egui::Key::C && mods.ctrl && ctrl_c_copies && has_selection {
-                            do_copy = true;
-                            continue;
-                        }
-                        if *key == egui::Key::V && mods.ctrl && ctrl_v_pastes {
-                            continue; // handled via Event::Paste below
-                        }
-                        if let Some(bytes) = input::encode_key(*key, mods, app_cursor) {
-                            outgoing.extend(bytes);
-                        }
-                    }
-                    egui::Event::Paste(text) => do_paste = Some(text.clone()),
-                    egui::Event::Copy => do_copy = true,
-                    _ => {}
                 }
-            }
-        });
+            });
+        }
 
+        if paste_clipboard && do_paste.is_none() {
+            do_paste = self.clipboard.get_text();
+        }
         if do_copy {
             self.copy_focused();
         }
@@ -1944,6 +2147,15 @@ impl TerminalApp {
                     if ui.add(egui::Slider::new(&mut self.config.window.padding, 0.0..=64.0).text("Padding")).changed() {
                         save = true;
                     }
+                    if self.config.window.padding < self.config.effective_padding() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "The status strip needs a margin of at least {:.0} px, so that is used. Set the status style to hidden to use less.",
+                                config::STATUS_STRIP_MIN_PADDING
+                            ))
+                            .weak(),
+                        );
+                    }
                     if ui.add(egui::Slider::new(&mut self.config.appearance.vignette, 0.0..=1.0).text("Vignette (CRT-style edge falloff)")).changed() {
                         save = true;
                     }
@@ -1994,6 +2206,42 @@ impl TerminalApp {
                         save = true;
                     }
                     if ui.checkbox(&mut self.config.effects.enabled, "Animations").changed() {
+                        save = true;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.heading("Behaviour");
+                    ui.separator();
+                    // `&&` keeps the checkbox from being drawn at all off macOS.
+                    if cfg!(target_os = "macos")
+                        && ui
+                            .checkbox(
+                                &mut self.config.general.option_as_meta,
+                                "Use Option as Meta (off: Option types @ | [ { and accents)",
+                            )
+                            .changed()
+                    {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.selection.copy_on_select, "Copy on select").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.selection.ctrl_c_copies, "Ctrl+C copies when text is selected").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.general.confirm_close_running, "Confirm before closing a running program").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.general.shell_integration, "Shell integration (new tabs)").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.bell.visual, "Visual bell").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.bell.audible, "Audible bell").changed() {
+                        save = true;
+                    }
+                    if ui.checkbox(&mut self.config.bell.urgent, "Flag the window (Dock bounce) on bell").changed() {
                         save = true;
                     }
 
@@ -2060,7 +2308,12 @@ impl TerminalApp {
                             save = true;
                         }
                     });
-                    if ui.checkbox(&mut self.config.accessibility.speak_output, "Speak notifications (needs speech-dispatcher)").changed() {
+                    let speak_label = if cfg!(target_os = "macos") {
+                        "Speak notifications"
+                    } else {
+                        "Speak notifications (needs speech-dispatcher)"
+                    };
+                    if ui.checkbox(&mut self.config.accessibility.speak_output, speak_label).changed() {
                         save = true;
                     }
 
@@ -2102,13 +2355,27 @@ impl TerminalApp {
                         }
                     }
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Saved automatically to ~/.config/mitos/terminal.toml").weak());
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Saved automatically to {}",
+                            Config::path().display()
+                        ))
+                        .weak(),
+                    );
                 });
             });
         self.show_settings = open;
         if save {
             self.config.sanitize();
-            let _ = self.config.save();
+            // A failed save used to be ignored, so the settings looked applied and then were gone
+            // after a restart.
+            if let Err(e) = self.config.save() {
+                let msg = format!("Could not save settings to {}: {e}", Config::path().display());
+                eprintln!("[mitos-terminal] {msg}");
+                self.startup_errors = vec![msg];
+                self.show_error_bar = true;
+            }
+            self.sync_term_settings_to_panes();
             self.theme = self.config.theme(&self.home);
             self.sync_theme_colors_to_panes();
             self.sync_cursor_default_to_panes();
@@ -2144,6 +2411,7 @@ impl TerminalApp {
             .show(ctx, |ui| {
                 let resp = ui.text_edit_singleline(&mut self.palette_query);
                 resp.request_focus();
+                note_text_focus(ctx, &resp);
                 let q = self.palette_query.to_ascii_lowercase();
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
@@ -2281,11 +2549,19 @@ impl TerminalApp {
         let Some(pane_id) = self.pending_close else {
             return;
         };
-        let name = self
-            .panes
-            .get(&pane_id)
-            .and_then(|p| p.session.foreground_name())
-            .unwrap_or_else(|| "a running program".to_string());
+        // Looked up once per dialog: on macOS this runs `ps`, which must not happen every frame.
+        let name = match &self.pending_close_name {
+            Some(n) => n.clone(),
+            None => {
+                let n = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(|p| p.session.foreground_name())
+                    .unwrap_or_else(|| "a running program".to_string());
+                self.pending_close_name = Some(n.clone());
+                n
+            }
+        };
         let mut go = false;
         let mut cancel = false;
         egui::Window::new("Close pane?")
@@ -2305,9 +2581,11 @@ impl TerminalApp {
             });
         if go {
             self.pending_close = None;
+            self.pending_close_name = None;
             self.close_pane(ctx, pane_id);
         } else if cancel {
             self.pending_close = None;
+            self.pending_close_name = None;
         }
     }
 }

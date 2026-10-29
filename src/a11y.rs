@@ -84,18 +84,32 @@ impl Default for AnnounceQueue {
 // Speech (optional; requires speech-dispatcher's `spd-say` on $PATH)
 // ---------------------------------------------------------------------------
 
+/// The speech program: macOS ships `say`; elsewhere speech-dispatcher's `spd-say`.
+fn speech_program() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "/usr/bin/say"
+    } else {
+        "spd-say"
+    }
+}
+
 pub fn speech_available() -> bool {
-    crate::pty::which("spd-say").is_some()
+    if cfg!(target_os = "macos") {
+        std::path::Path::new(speech_program()).exists()
+    } else {
+        crate::pty::which(speech_program()).is_some()
+    }
 }
 
 /// Speak `text` if `enabled`. `spd-say -C` cancels anything currently being
 /// said, so an urgent announcement (bell) can pre-empt a long one (output).
+/// (`say` has no equivalent flag, so on macOS announcements simply queue up.)
 pub fn speak(text: &str, enabled: bool, interrupt: bool) {
     if !enabled || text.trim().is_empty() {
         return;
     }
-    let mut cmd = Command::new("spd-say");
-    if interrupt {
+    let mut cmd = Command::new(speech_program());
+    if interrupt && !cfg!(target_os = "macos") {
         cmd.arg("-C");
     }
     let _ = cmd
@@ -121,6 +135,30 @@ const FREEDESKTOP_BELL_PATHS: &[&str] = &[
 /// falling back to writing BEL to `/dev/tty` (which the *controlling* terminal, if any —
 /// not this window — may turn into a beep). Silent no-op if nothing is available.
 pub fn ring_bell() {
+    // macOS: play one of the stock alert sounds with `afplay`. (Writing BEL to /dev/tty, the
+    // fallback below, only beeps if this process was started from a terminal, and then it is that
+    // other terminal making the noise.)
+    #[cfg(target_os = "macos")]
+    {
+        let player = std::path::Path::new("/usr/bin/afplay");
+        if player.exists() {
+            for name in ["Funk", "Ping", "Pop", "Tink", "Basso"] {
+                let sound = format!("/System/Library/Sounds/{name}.aiff");
+                if std::path::Path::new(&sound).exists() {
+                    let ok = Command::new(player)
+                        .arg(sound)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .is_ok();
+                    if ok {
+                        return;
+                    }
+                }
+            }
+        }
+    }
     if let Some(path) = FREEDESKTOP_BELL_PATHS
         .iter()
         .find(|p| std::path::Path::new(p).exists())

@@ -220,6 +220,34 @@ pub fn encode_text(text: &str, alt: bool) -> Vec<u8> {
     v
 }
 
+/// The character a letter or digit key types with no modifiers (US layout), for macOS
+/// "Option as Meta" (`[general] option_as_meta`): Option+b has to send `ESC b`, but the text event
+/// for that press is the composed character (`∫`), so the key itself identifies the letter.
+/// `shift` gives the capital letter; shifted digits depend on the layout, so they return `None`
+/// and the caller falls back to the text event.
+pub fn meta_base_char(key: Key, shift: bool) -> Option<char> {
+    if let Some(n) = letter_index(key) {
+        let c = (b'a' + n - 1) as char;
+        return Some(if shift { c.to_ascii_uppercase() } else { c });
+    }
+    if shift {
+        return None;
+    }
+    Some(match key {
+        Key::Num0 => '0',
+        Key::Num1 => '1',
+        Key::Num2 => '2',
+        Key::Num3 => '3',
+        Key::Num4 => '4',
+        Key::Num5 => '5',
+        Key::Num6 => '6',
+        Key::Num7 => '7',
+        Key::Num8 => '8',
+        Key::Num9 => '9',
+        _ => return None,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Mouse
 // ---------------------------------------------------------------------------
@@ -354,6 +382,16 @@ pub fn focus_report(focused: bool) -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meta_base_char_maps_letters_and_digits() {
+        assert_eq!(meta_base_char(Key::B, false), Some('b'));
+        assert_eq!(meta_base_char(Key::B, true), Some('B'));
+        assert_eq!(meta_base_char(Key::Z, false), Some('z'));
+        assert_eq!(meta_base_char(Key::Num5, false), Some('5'));
+        assert_eq!(meta_base_char(Key::Num5, true), None);
+        assert_eq!(meta_base_char(Key::Enter, false), None);
+    }
 
     const N: Mods = Mods::NONE;
     const CTRL: Mods = Mods {
