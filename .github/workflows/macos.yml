@@ -6,8 +6,9 @@
 #
 # It starts by itself when a push to `main` changes the code (src/, Cargo.toml) or this file, and
 # you can also start it by hand: Actions -> "macOS build" -> "Run workflow". When it finishes,
-# open the run, download the `mitos-terminal-macos-x86_64` artifact at the bottom of the page and
-# follow docs/MACOS.md.
+# open the run, download the `mitos-terminal-macos-x86_64` artifact (the bare binary) or the
+# `mitos-terminal-app-macos-x86_64` artifact (a double-clickable "MITOS Terminal.app" in a .dmg and
+# in a tarball) at the bottom of the page and follow docs/MACOS.md.
 #
 # (macOS minutes are metered on private repositories: delete the `push:` block below to make
 # this manual-only.)
@@ -22,6 +23,7 @@ on:
       - ".github/workflows/macos.yml"
       - "Cargo.toml"
       - "src/**"
+      - "packaging/**"
 
 permissions:
   contents: read
@@ -65,4 +67,21 @@ jobs:
         with:
           name: mitos-terminal-macos-x86_64
           path: mitos-terminal-macos-x86_64.tar.gz
+          if-no-files-found: error
+      - name: Build the app bundle and disk image
+        run: |
+          bash packaging/macos/make-app.sh \
+            --binary target/x86_64-apple-darwin/release/mitos-terminal \
+            --out dist/macos --dmg
+          # Artifact zips drop the executable bit, so the bare .app goes into a tarball
+          # (the .dmg is a single file and keeps everything inside it).
+          tar -czf mitos-terminal-app-macos-x86_64.tar.gz -C dist/macos "MITOS Terminal.app"
+          ls -la dist/macos
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitos-terminal-app-macos-x86_64
+          path: |
+            dist/macos/*.dmg
+            mitos-terminal-app-macos-x86_64.tar.gz
           if-no-files-found: error
