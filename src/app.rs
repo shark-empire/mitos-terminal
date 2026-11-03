@@ -815,9 +815,11 @@ impl TerminalApp {
                                 // wmctrl does not exist here; ask for the Dock icon to bounce
                                 // (macOS ignores this while the app is already in front).
                                 if !self.window_focused {
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
-                                        egui::UserAttentionType::Informational,
-                                    ));
+                                    ctx.send_viewport_cmd(
+                                        egui::ViewportCommand::RequestUserAttention(
+                                            egui::UserAttentionType::Informational,
+                                        ),
+                                    );
                                 }
                             } else {
                                 crate::platform::request_urgent("MITOS Terminal");
@@ -2370,7 +2372,10 @@ impl TerminalApp {
             // A failed save used to be ignored, so the settings looked applied and then were gone
             // after a restart.
             if let Err(e) = self.config.save() {
-                let msg = format!("Could not save settings to {}: {e}", Config::path().display());
+                let msg = format!(
+                    "Could not save settings to {}: {e}",
+                    Config::path().display()
+                );
                 eprintln!("[mitos-terminal] {msg}");
                 self.startup_errors = vec![msg];
                 self.show_error_bar = true;
