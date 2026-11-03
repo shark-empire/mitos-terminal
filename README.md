@@ -64,7 +64,8 @@ cargo test
 
 Both are optional (feature `mitos`, on by default). `cargo build --release
 --no-default-features` builds a **standalone** terminal without them — that is
-how it is built for macOS; see `docs/MACOS.md`.
+how it is built for macOS; see `docs/MACOS.md`, which also covers installing it as a
+double-clickable app (`packaging/macos/make-app.sh --build --install`).
 
 ## Configuration
 

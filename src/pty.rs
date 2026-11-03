@@ -120,7 +120,33 @@ pub fn which(name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Shell precedence: explicit → `mitos-shell` → `$SHELL` → `/bin/sh`.
+/// The login shell recorded for this user (`pw_shell`). A macOS app opened from the Dock or
+/// Finder may not have `$SHELL` in its environment; without this the terminal would settle for
+/// `/bin/sh` instead of the user's zsh. Other platforms keep the old behaviour (`None`).
+#[cfg(target_os = "macos")]
+fn login_shell_from_passwd() -> Option<String> {
+    // SAFETY: `getpwuid` returns NULL or a pointer to a record in static storage that stays valid
+    // until the next getpw* call; the shell string is copied out before anything else runs.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() {
+            return None;
+        }
+        let sh = (*pw).pw_shell;
+        if sh.is_null() {
+            return None;
+        }
+        std::ffi::CStr::from_ptr(sh).to_str().ok().map(str::to_string)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn login_shell_from_passwd() -> Option<String> {
+    None
+}
+
+/// Shell precedence: explicit → `mitos-shell` → `$SHELL` → the user's login shell (macOS only)
+/// → `/bin/sh`.
 pub fn resolve_shell(explicit: Option<&str>) -> (String, ShellKind) {
     let pick = |p: PathBuf| -> (String, ShellKind) {
         let s = p.to_string_lossy().into_owned();
@@ -136,6 +162,11 @@ pub fn resolve_shell(explicit: Option<&str>) -> (String, ShellKind) {
         return pick(p);
     }
     if let Ok(sh) = std::env::var("SHELL") {
+        if let Some(p) = which(&sh) {
+            return pick(p);
+        }
+    }
+    if let Some(sh) = login_shell_from_passwd() {
         if let Some(p) = which(&sh) {
             return pick(p);
         }
@@ -572,10 +603,7 @@ mod tests {
     fn zsh_forwarders_source_the_users_own_file_of_the_same_name() {
         for name in [".zshenv", ".zprofile", ".zlogin"] {
             let s = ZSH_FORWARDER.replace("@FILE@", name);
-            assert!(
-                !s.contains("@FILE@"),
-                "{name}: placeholder left in the script"
-            );
+            assert!(!s.contains("@FILE@"), "{name}: placeholder left in the script");
             assert!(
                 s.contains(&format!("/{name}")),
                 "{name}: must source the user's own {name}"

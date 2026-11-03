@@ -42,6 +42,58 @@ The first build compiles a few hundred crates and takes a long time on 2014 hard
 `--no-default-features` is what leaves out the MITOS-only crates; without it Cargo also tries to
 build `mitos-utils` and `mitos-pkg`, which are Linux userland libraries.
 
+## Install it like an app
+
+The result is a normal **MITOS Terminal.app**: its own icon, a Dock entry, the name in the menu
+bar, `Cmd+Q`, Spotlight and Launchpad.
+
+### From the CI build (nothing to compile on the Mac)
+
+1. Run the **macOS build** workflow (Actions → macOS build → Run workflow) and open the finished run.
+2. Download the artifact **`mitos-terminal-app-macos-x86_64`** and unzip it. It holds a `.dmg` (and
+   the same app in a `.tar.gz`).
+3. Open the `.dmg` and drag **MITOS Terminal** onto **Applications**.
+4. First launch: the app is only ad-hoc signed (there is no Apple Developer ID behind it), so macOS
+   will not open a downloaded copy with a plain double-click. Right-click (or Control-click) the app
+   → **Open** → **Open**, or run this once:
+
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/MITOS Terminal.app"
+   ```
+
+   On Big Sur you can also use System Preferences → Security & Privacy → General → **Open
+   Anyway**. After that it opens like any other app.
+
+### Building it on the Mac
+
+```sh
+git clone <your repository URL> && cd mitos-terminal
+packaging/macos/make-app.sh --build --install
+```
+
+That compiles the release build (`cargo build --release --no-default-features`), assembles
+`dist/macos/MITOS Terminal.app`, signs it ad hoc and copies it to `/Applications` (or to
+`~/Applications` if you cannot write there). A copy you build yourself is not quarantined, so it
+opens with a double-click straight away. Add `--dmg` to also get a drag-to-Applications disk image;
+`make-app.sh --help` lists the other options (for example `--binary` to package a binary you built
+earlier).
+
+### Good to know
+
+- The CI build is for Intel Macs (macOS 11 and later). On Apple silicon it runs through Rosetta 2;
+  for a native build use the local build above.
+- Keep it in the Dock: right-click its Dock icon → Options → **Keep in Dock**; start it at login:
+  same menu → **Open at Login**.
+- Opened from the Dock or Finder, the terminal starts your login shell (zsh) in your home folder
+  and loads your `~/.zprofile`, so `brew` and friends are on the `PATH`.
+- Settings live in `~/.config/mitos/` and caches in `~/Library/Caches/mitos/`. To update, replace the
+  app in Applications with the new one; the settings stay. To uninstall, drag the app to the Trash
+  (and delete those two folders if you want everything gone).
+- Details of the bundle: identifier `org.mitos.terminal` (override with the `MITOS_BUNDLE_ID`
+  environment variable when running the script), icon `packaging/macos/AppIcon.icns` (regenerated
+  by `packaging/macos/gen_icon.py` if you change the artwork), metadata in
+  `packaging/macos/Info.plist.in`.
+
 ## Taking a screenshot
 
 - Open Settings (the gear button, or `Cmd+,`) → **Effects** → tick **Matrix code rain**.
