@@ -26,6 +26,9 @@ pub const MIN_FONT: f32 = 6.0;
 pub const MAX_FONT: f32 = 72.0;
 /// Smallest pane margin (logical points) that has room for the status strip.
 pub const STATUS_STRIP_MIN_PADDING: f32 = 16.0;
+/// Matrix rain intensity (`[effects] rain_intensity`): 0.5 is the long-standing look.
+pub const DEFAULT_RAIN_INTENSITY: f32 = 0.5;
+pub const MIN_RAIN_INTENSITY: f32 = 0.05;
 
 /// Where `terminal.toml` and `home.conf` live.
 ///
@@ -350,6 +353,10 @@ pub struct EffectsCfg {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rain: Option<bool>,
+    /// How intense the matrix rain is: 0.05 (a few faint streams) to 1.0 (dense and bright),
+    /// 0.5 being the default look. Only matters while the rain itself is on; the Settings window
+    /// has a slider for it.
+    pub rain_intensity: f32,
     pub grid: bool,
     pub sweep: bool,
     pub scanlines: bool,
@@ -366,6 +373,7 @@ impl Default for EffectsCfg {
         EffectsCfg {
             enabled: true,
             rain: None,
+            rain_intensity: DEFAULT_RAIN_INTENSITY,
             grid: t.grid_overlay,
             sweep: true,
             scanlines: t.scanlines,
@@ -704,6 +712,11 @@ impl Config {
         self.scrollback.lines = self.scrollback.lines.min(1_000_000);
         self.scrollback.wheel_lines = self.scrollback.wheel_lines.clamp(0.25, 50.0);
         self.effects.max_fps = self.effects.max_fps.clamp(5, 120);
+        self.effects.rain_intensity = if self.effects.rain_intensity.is_finite() {
+            self.effects.rain_intensity.clamp(MIN_RAIN_INTENSITY, 1.0)
+        } else {
+            DEFAULT_RAIN_INTENSITY
+        };
         self.bell.min_interval_ms = self.bell.min_interval_ms.clamp(50, 60_000);
         self.accessibility.min_contrast = self.accessibility.min_contrast.clamp(0.0, 21.0);
         self.security.max_title = self.security.max_title.clamp(16, 4096);
@@ -1774,6 +1787,26 @@ mod tests {
             !t.matches(Key::T, true, false, false),
             "modifiers must match exactly"
         );
+    }
+
+    #[test]
+    fn rain_intensity_defaults_clamps_and_round_trips() {
+        assert_eq!(
+            Config::default().effects.rain_intensity,
+            DEFAULT_RAIN_INTENSITY
+        );
+        let hi = Config::parse("[effects]\nrain_intensity = 7.0\n").unwrap();
+        assert_eq!(hi.effects.rain_intensity, 1.0);
+        let lo = Config::parse("[effects]\nrain_intensity = -3.0\n").unwrap();
+        assert_eq!(lo.effects.rain_intensity, MIN_RAIN_INTENSITY);
+        let mut broken = Config::default();
+        broken.effects.rain_intensity = f32::NAN;
+        broken.sanitize();
+        assert_eq!(broken.effects.rain_intensity, DEFAULT_RAIN_INTENSITY);
+        let mid = Config::parse("[effects]\nrain_intensity = 0.8\n").unwrap();
+        assert!((mid.effects.rain_intensity - 0.8).abs() < 1e-6);
+        let again = Config::parse(&mid.to_toml().unwrap()).unwrap();
+        assert_eq!(again.effects.rain_intensity, mid.effects.rain_intensity);
     }
 
     #[test]

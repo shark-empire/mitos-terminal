@@ -105,6 +105,7 @@ status_style = "breadcrumb"   # hidden | minimal | breadcrumb | segmented
 [effects]
 enabled = true
 rain = false                  # matrix code rain (opt-in); omit to follow home.conf
+rain_intensity = 0.5          # 0.05 (a few faint streams) .. 1.0 (dense, bright); 0.5 = default look
 
 [security]
 osc52_write = true            # let programs write the clipboard (never reads)

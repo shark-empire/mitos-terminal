@@ -190,7 +190,10 @@ animations") and because it means painting it never forces a repaint.
 Behaviour change worth knowing about: Matrix code rain (from the original
 cinematic layer) is now **opt-in** rather than on by default, since none of
 the presets in the brief call for it and the brief asks for something
-comfortable over hours of use.
+comfortable over hours of use. Its strength is adjustable: Settings → Effects →
+**Rain intensity** (live), or `[effects] rain_intensity` (0.05–1.0, default 0.5 =
+the original look). Higher values add streams and brightness, which costs more
+CPU on an old machine; lower `effects.max_fps` if it gets sluggish.
 
 ## Review after the first macOS test
 

@@ -267,7 +267,7 @@ fn new_pane(
         t.word_separators = config.selection.word_separators.clone();
     }
     let rain = if config.rain_enabled(home) {
-        Some(fx::CodeRain::new(10.0, 0.55))
+        Some(fx::CodeRain::with_intensity(config.effects.rain_intensity))
     } else {
         None
     };
@@ -404,12 +404,9 @@ impl TerminalApp {
         self.registry
             .set_allow_buffer_read(self.config.security.ipc_buffer_read);
         let want_rain = self.config.rain_enabled(&self.home);
+        let rain_intensity = self.config.effects.rain_intensity;
         for pane in self.panes.values_mut() {
-            match (want_rain, &pane.rain) {
-                (true, None) => pane.rain = Some(fx::CodeRain::new(10.0, 0.55)),
-                (false, Some(_)) => pane.rain = None,
-                _ => {}
-            }
+            sync_rain(&mut pane.rain, want_rain, rain_intensity);
             let policy = self.config.term_policy();
             if let Ok(mut t) = pane.session.term().lock() {
                 t.set_policy(policy);
@@ -815,11 +812,9 @@ impl TerminalApp {
                                 // wmctrl does not exist here; ask for the Dock icon to bounce
                                 // (macOS ignores this while the app is already in front).
                                 if !self.window_focused {
-                                    ctx.send_viewport_cmd(
-                                        egui::ViewportCommand::RequestUserAttention(
-                                            egui::UserAttentionType::Informational,
-                                        ),
-                                    );
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                                        egui::UserAttentionType::Informational,
+                                    ));
                                 }
                             } else {
                                 crate::platform::request_urgent("MITOS Terminal");
@@ -991,6 +986,20 @@ fn color_override_row(
         }
     });
     changed
+}
+
+/// Make a pane's matrix rain match the settings: create it, drop it, or (when it is already
+/// falling) apply the new intensity live.
+fn sync_rain(rain: &mut Option<fx::CodeRain>, want: bool, intensity: f32) {
+    match (want, rain.is_some()) {
+        (false, _) => *rain = None,
+        (true, false) => *rain = Some(fx::CodeRain::with_intensity(intensity)),
+        (true, true) => {
+            if let Some(r) = rain.as_mut() {
+                r.set_intensity(intensity);
+            }
+        }
+    }
 }
 
 /// Remember that one of the app's own text fields (find bar, Settings colour boxes) has keyboard
@@ -2328,6 +2337,22 @@ impl TerminalApp {
                         crate::config::HomeConf::save_matrix_rain(rain_on);
                         save = true;
                     }
+                    // Greyed out while the rain is off; applies live while it falls.
+                    let rain_active = self.config.rain_enabled(&self.home);
+                    ui.add_enabled_ui(rain_active, |ui| {
+                        let slider = egui::Slider::new(
+                            &mut self.config.effects.rain_intensity,
+                            config::MIN_RAIN_INTENSITY..=1.0,
+                        )
+                        .fixed_decimals(2)
+                        .text("Rain intensity");
+                        let resp = ui.add(slider).on_hover_text(
+                            "Left: a few faint streams. Right: dense, bright rain. The middle is the default look.",
+                        );
+                        if resp.changed() {
+                            save = true;
+                        }
+                    });
                     if ui.checkbox(&mut self.config.effects.grid, "Technical grid overlay").changed() {
                         save = true;
                     }
@@ -2372,10 +2397,7 @@ impl TerminalApp {
             // A failed save used to be ignored, so the settings looked applied and then were gone
             // after a restart.
             if let Err(e) = self.config.save() {
-                let msg = format!(
-                    "Could not save settings to {}: {e}",
-                    Config::path().display()
-                );
+                let msg = format!("Could not save settings to {}: {e}", Config::path().display());
                 eprintln!("[mitos-terminal] {msg}");
                 self.startup_errors = vec![msg];
                 self.show_error_bar = true;
@@ -2388,12 +2410,9 @@ impl TerminalApp {
             self.metrics = render::measure(ctx, &self.font, self.config.font.line_height);
             self.metrics_font_size = self.config.font.size;
             let want_rain = self.config.rain_enabled(&self.home);
+            let rain_intensity = self.config.effects.rain_intensity;
             for pane in self.panes.values_mut() {
-                match (want_rain, &pane.rain) {
-                    (true, None) => pane.rain = Some(fx::CodeRain::new(10.0, 0.55)),
-                    (false, Some(_)) => pane.rain = None,
-                    _ => {}
-                }
+                sync_rain(&mut pane.rain, want_rain, rain_intensity);
                 let policy = self.config.term_policy();
                 if let Ok(mut t) = pane.session.term().lock() {
                     t.set_policy(policy);

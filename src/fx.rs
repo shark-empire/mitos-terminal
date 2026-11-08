@@ -66,10 +66,20 @@ struct Drop {
 
 pub struct CodeRain {
     drops: Vec<Drop>,
-    density: f32, // drops per 100px of width
-    opacity: f32, // master alpha 0.0..=1.0
+    density: f32,   // drops per 100px of width
+    opacity: f32,   // master alpha 0.0..=1.0
+    max_drops: f32, // most drops there ever are, however wide the pane
     glyph_size: f32,
     last_rect: Rect,
+}
+
+/// What the single 0..=1 "rain intensity" knob (`[effects] rain_intensity`, the slider in Settings)
+/// stands for: `(drops per 100 px of width, brightness, most drops at once)`. 0.5 is the
+/// long-standing look (10 per 100 px, at most 64, 55% bright); 0.05 is a few faint streams and
+/// 1.0 is dense and bright. Out-of-range values are clamped.
+fn rain_params(intensity: f32) -> (f32, f32, f32) {
+    let i = intensity.clamp(0.0_f32, 1.0_f32);
+    (20.0_f32 * i, 0.2_f32 + 0.7_f32 * i, 128.0_f32 * i)
 }
 
 impl CodeRain {
@@ -78,38 +88,76 @@ impl CodeRain {
             drops: Vec::new(),
             density,
             opacity,
+            max_drops: 64.0_f32,
             glyph_size: 14.0_f32,
             last_rect: Rect::NOTHING,
         }
     }
 
+    /// Rain at a user-chosen intensity (0..=1; 0.5 is the default look).
+    pub fn with_intensity(intensity: f32) -> Self {
+        let mut rain = Self::new(10.0_f32, 0.55_f32);
+        rain.set_intensity(intensity);
+        rain
+    }
+
+    /// Change the intensity of rain that is already falling. Streams are added or removed on the
+    /// next `tick`; the ones that stay keep falling where they are.
+    pub fn set_intensity(&mut self, intensity: f32) {
+        let (density, opacity, max_drops) = rain_params(intensity);
+        self.density = density;
+        self.opacity = opacity;
+        self.max_drops = max_drops;
+    }
+
+    fn target_count(&self, rect: Rect) -> usize {
+        ((rect.width() / 100.0_f32) * self.density)
+            .clamp(8.0_f32, self.max_drops.max(8.0_f32)) as usize
+    }
+
+    /// Drop number `i`, scattered above/inside `rect` so the first frame isn't empty.
+    fn spawn(i: usize, rect: Rect) -> Drop {
+        let seed = hash(i as u64 + 0x5EED);
+        let x = rect.left() + unit(hash(seed)) * rect.width();
+        let head =
+            rect.top() + unit(hash(seed ^ 0xA5A5)) * rect.height() * 2.0_f32 - rect.height();
+        let speed = 40.0_f32 + unit(hash(seed ^ 0x0F0F)) * 160.0_f32;
+        let trail = 60.0_f32 + unit(hash(seed ^ 0x1234)) * 200.0_f32;
+        Drop {
+            x,
+            head,
+            speed,
+            trail,
+            seed,
+        }
+    }
+
     fn rebuild(&mut self, rect: Rect) {
-        let count = ((rect.width() / 100.0_f32) * self.density).clamp(8.0_f32, 64.0_f32) as usize;
+        let count = self.target_count(rect);
         self.drops.clear();
         self.drops.reserve(count);
         for i in 0..count {
-            let seed = hash(i as u64 + 0x5EED);
-            let x = rect.left() + unit(hash(seed)) * rect.width();
-            // Start scattered above/inside the screen so the first frame isn't empty
-            let head =
-                rect.top() + unit(hash(seed ^ 0xA5A5)) * rect.height() * 2.0_f32 - rect.height();
-            let speed = 40.0_f32 + unit(hash(seed ^ 0x0F0F)) * 160.0_f32;
-            let trail = 60.0_f32 + unit(hash(seed ^ 0x1234)) * 200.0_f32;
-            self.drops.push(Drop {
-                x,
-                head,
-                speed,
-                trail,
-                seed,
-            });
+            self.drops.push(Self::spawn(i, rect));
         }
         self.last_rect = rect;
+    }
+
+    /// Add or remove streams to match the current intensity without restarting the rain.
+    fn fit_count(&mut self, rect: Rect) {
+        let want = self.target_count(rect);
+        self.drops.truncate(want);
+        while self.drops.len() < want {
+            let i = self.drops.len();
+            self.drops.push(Self::spawn(i, rect));
+        }
     }
 
     /// Advance the simulation. Call once per frame.
     pub fn tick(&mut self, dt: f32, rect: Rect) {
         if rect != self.last_rect || self.drops.is_empty() {
             self.rebuild(rect);
+        } else {
+            self.fit_count(rect);
         }
         for d in &mut self.drops {
             d.head += d.speed * dt;
@@ -431,6 +479,49 @@ fn paint_soft_blob(p: &Painter, center: Pos2, radius: f32, color: [u8; 3], peak_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rain_intensity_half_is_the_original_look() {
+        let (density, opacity, max_drops) = rain_params(0.5);
+        assert!((density - 10.0).abs() < 1e-4);
+        assert!((opacity - 0.55).abs() < 1e-4);
+        assert!((max_drops - 64.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn rain_gets_denser_and_brighter_with_intensity() {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 600.0));
+        let count = |i: f32| CodeRain::with_intensity(i).target_count(rect);
+        assert_eq!(count(0.5), 64, "the default look: 64 streams");
+        assert_eq!(count(1.0), 128);
+        assert_eq!(count(0.25), 32);
+        assert_eq!(count(0.0), 8, "never fewer than 8 streams");
+        assert!(count(0.05) < count(0.25) && count(0.25) < count(0.5) && count(0.5) < count(1.0));
+        assert!(rain_params(0.1).1 < rain_params(0.9).1, "brighter at high intensity");
+        // Out-of-range input is clamped rather than trusted.
+        assert_eq!(count(5.0), count(1.0));
+        assert_eq!(count(-1.0), count(0.0));
+    }
+
+    #[test]
+    fn changing_intensity_keeps_the_streams_that_stay() {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 600.0));
+        let mut rain = CodeRain::with_intensity(0.5);
+        rain.tick(0.0, rect);
+        assert_eq!(rain.drops.len(), 64);
+        rain.tick(0.5, rect); // let it fall for a moment
+        let before: Vec<f32> = rain.drops.iter().take(10).map(|d| d.head).collect();
+
+        rain.set_intensity(1.0);
+        rain.tick(0.0, rect);
+        assert_eq!(rain.drops.len(), 128, "more streams are added");
+        let after: Vec<f32> = rain.drops.iter().take(10).map(|d| d.head).collect();
+        assert_eq!(before, after, "the streams that stay are not restarted");
+
+        rain.set_intensity(0.1);
+        rain.tick(0.0, rect);
+        assert_eq!(rain.drops.len(), 12, "streams are removed again");
+    }
 
     #[test]
     fn hash_is_deterministic_and_spreads_out() {
