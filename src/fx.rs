@@ -111,16 +111,15 @@ impl CodeRain {
     }
 
     fn target_count(&self, rect: Rect) -> usize {
-        ((rect.width() / 100.0_f32) * self.density)
-            .clamp(8.0_f32, self.max_drops.max(8.0_f32)) as usize
+        ((rect.width() / 100.0_f32) * self.density).clamp(8.0_f32, self.max_drops.max(8.0_f32))
+            as usize
     }
 
     /// Drop number `i`, scattered above/inside `rect` so the first frame isn't empty.
     fn spawn(i: usize, rect: Rect) -> Drop {
         let seed = hash(i as u64 + 0x5EED);
         let x = rect.left() + unit(hash(seed)) * rect.width();
-        let head =
-            rect.top() + unit(hash(seed ^ 0xA5A5)) * rect.height() * 2.0_f32 - rect.height();
+        let head = rect.top() + unit(hash(seed ^ 0xA5A5)) * rect.height() * 2.0_f32 - rect.height();
         let speed = 40.0_f32 + unit(hash(seed ^ 0x0F0F)) * 160.0_f32;
         let trail = 60.0_f32 + unit(hash(seed ^ 0x1234)) * 200.0_f32;
         Drop {
@@ -497,7 +496,10 @@ mod tests {
         assert_eq!(count(0.25), 32);
         assert_eq!(count(0.0), 8, "never fewer than 8 streams");
         assert!(count(0.05) < count(0.25) && count(0.25) < count(0.5) && count(0.5) < count(1.0));
-        assert!(rain_params(0.1).1 < rain_params(0.9).1, "brighter at high intensity");
+        assert!(
+            rain_params(0.1).1 < rain_params(0.9).1,
+            "brighter at high intensity"
+        );
         // Out-of-range input is clamped rather than trusted.
         assert_eq!(count(5.0), count(1.0));
         assert_eq!(count(-1.0), count(0.0));

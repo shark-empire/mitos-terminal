@@ -136,7 +136,10 @@ fn login_shell_from_passwd() -> Option<String> {
         if sh.is_null() {
             return None;
         }
-        std::ffi::CStr::from_ptr(sh).to_str().ok().map(str::to_string)
+        std::ffi::CStr::from_ptr(sh)
+            .to_str()
+            .ok()
+            .map(str::to_string)
     }
 }
 
@@ -603,7 +606,10 @@ mod tests {
     fn zsh_forwarders_source_the_users_own_file_of_the_same_name() {
         for name in [".zshenv", ".zprofile", ".zlogin"] {
             let s = ZSH_FORWARDER.replace("@FILE@", name);
-            assert!(!s.contains("@FILE@"), "{name}: placeholder left in the script");
+            assert!(
+                !s.contains("@FILE@"),
+                "{name}: placeholder left in the script"
+            );
             assert!(
                 s.contains(&format!("/{name}")),
                 "{name}: must source the user's own {name}"

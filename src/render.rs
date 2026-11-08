@@ -297,7 +297,10 @@ pub fn paint_pane(
         // The margin ring, as four strips that tile it exactly (top, bottom, left, right).
         let ring = [
             ERect::from_min_max(rect.left_top(), Pos2::new(rect.right(), text_area.top())),
-            ERect::from_min_max(Pos2::new(rect.left(), text_area.bottom()), rect.right_bottom()),
+            ERect::from_min_max(
+                Pos2::new(rect.left(), text_area.bottom()),
+                rect.right_bottom(),
+            ),
             ERect::from_min_max(
                 Pos2::new(rect.left(), text_area.top()),
                 Pos2::new(text_area.left(), text_area.bottom()),
