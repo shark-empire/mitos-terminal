@@ -24,6 +24,7 @@ on:
       - "Cargo.toml"
       - "src/**"
       - "packaging/**"
+      - "assets/**"
 
 permissions:
   contents: read
