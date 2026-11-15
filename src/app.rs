@@ -2148,7 +2148,7 @@ impl TerminalApp {
                             }
                         });
                     ui.label(egui::RichText::new(resolved.tagline.as_str()).weak().italics());
-                    if ui.checkbox(&mut self.config.theme.follow_system, "Follow system light/dark (Sci-Fi \u{2194} Light only)").changed() {
+                    if ui.checkbox(&mut self.config.theme.follow_system, "Light preset follows system dark mode (switches to Sci-Fi)").changed() {
                         save = true;
                     }
 

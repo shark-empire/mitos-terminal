@@ -71,6 +71,9 @@ pub struct CodeRain {
     max_drops: f32, // most drops there ever are, however wide the pane
     glyph_size: f32,
     last_rect: Rect,
+    /// Multiplies the trail/head alpha. Light backgrounds need a stronger stream than dark ones
+    /// to stay visible; 1.0 is the original look.
+    pub alpha_boost: f32,
 }
 
 /// What the single 0..=1 "rain intensity" knob (`[effects] rain_intensity`, the slider in Settings)
@@ -91,6 +94,7 @@ impl CodeRain {
             max_drops: 64.0_f32,
             glyph_size: 14.0_f32,
             last_rect: Rect::NOTHING,
+            alpha_boost: 1.0_f32,
         }
     }
 
@@ -191,7 +195,8 @@ impl CodeRain {
 
                 // Quadratic fade: bright near the head, invisible at the tail
                 let fade = 1.0_f32 - (i as f32 / rows.max(1) as f32);
-                let alpha = (fade * fade * 130.0_f32 * self.opacity) as u8;
+                let alpha = (fade * fade * 130.0_f32 * self.opacity * self.alpha_boost)
+                    .min(255.0_f32) as u8;
 
                 let (ch, color) = if i == 0 {
                     // The leading glyph: brightest against whatever
@@ -202,7 +207,7 @@ impl CodeRain {
                             head[0],
                             head[1],
                             head[2],
-                            (190.0_f32 * self.opacity) as u8,
+                            (190.0_f32 * self.opacity * self.alpha_boost).min(255.0_f32) as u8,
                         ),
                     )
                 } else {

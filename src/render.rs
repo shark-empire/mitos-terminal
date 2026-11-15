@@ -373,12 +373,18 @@ pub fn paint_pane(
 
     if let Some(rain) = rain {
         rain.tick(dt.clamp(0.0, 0.25), rect);
-        let head = if theme.light {
-            mix(theme.accent, [0, 0, 0], 0.55)
+        // On a light background the stream needs a deeper tint and a stronger alpha to be seen.
+        let (tint, head) = if theme.light {
+            rain.alpha_boost = 1.7;
+            (
+                mix(theme.accent, [0, 0, 0], 0.2),
+                mix(theme.accent, [0, 0, 0], 0.6),
+            )
         } else {
-            [210, 255, 210]
+            rain.alpha_boost = 1.0;
+            (theme.accent, [210, 255, 210])
         };
-        rain.paint(&painter, rect, opts.now, theme.accent, head);
+        rain.paint(&painter, rect, opts.now, tint, head);
         animating = true;
     }
 

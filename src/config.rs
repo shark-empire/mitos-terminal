@@ -241,9 +241,10 @@ pub struct ThemeCfg {
     /// Preset slug — see `theme::THEME_PRESETS`. `"custom"` starts from a
     /// blank slate and expects most of the fields below to be set.
     pub name: String,
-    /// Let `home.conf`'s `theme_mode` switch between the futuristic-scifi
-    /// default and the Light preset. Only applies when one of those two is
-    /// selected — an explicit choice like Cyberpunk is never silently swapped.
+    /// Let the light/dark mode of the system (macOS appearance, or `home.conf`'s `theme_mode`)
+    /// switch the *Light* preset to Futuristic Sci-Fi while the system is in dark mode. Off by
+    /// default, and it never touches any other preset — an explicit choice like Sci-Fi or
+    /// Cyberpunk is never silently swapped.
     pub follow_system: bool,
     /// Every field below is a *generic* override layered onto whichever
     /// preset is active (including Custom) — the same mechanism that makes
@@ -273,7 +274,7 @@ impl Default for ThemeCfg {
     fn default() -> Self {
         ThemeCfg {
             name: "futuristic-scifi".into(),
-            follow_system: true,
+            follow_system: false,
             accent: None,
             foreground: None,
             background: None,
@@ -791,14 +792,14 @@ impl Config {
     /// config hot-reload take effect on the very next frame.
     pub fn theme(&self, home: &HomeConf) -> Theme {
         let mut t = Theme::by_name(&self.theme.name).unwrap_or_else(Theme::futuristic_scifi);
+        // Only the Light preset adapts: when the system is in dark mode it steps aside for
+        // Sci-Fi. Futuristic Sci-Fi is a dark identity of its own and is never swapped for Light
+        // just because the system is in light mode.
         if self.theme.follow_system
-            && (self.theme.name == "futuristic-scifi" || self.theme.name == "light")
+            && self.theme.name == "light"
+            && home.theme_mode.as_deref() == Some("dark")
         {
-            match home.theme_mode.as_deref() {
-                Some("light") => t = Theme::light(),
-                Some("dark") => t = Theme::futuristic_scifi(),
-                _ => {}
-            }
+            t = Theme::futuristic_scifi();
         }
         if self.accessibility.high_contrast {
             // `color_scheme` still picks which *variant* is used here (hand-tuned
@@ -1655,8 +1656,20 @@ mod tests {
         let home = HomeConf::parse("theme_mode=light\naccent_color=#112233\n");
         let cfg = Config::default();
         let t = cfg.theme(&home);
-        assert!(t.light, "home.conf light mode is followed");
+        assert_eq!(
+            t.id, "futuristic-scifi",
+            "Sci-Fi keeps its own dark look even when the system is in light mode"
+        );
+        assert!(!t.light);
         assert_eq!(t.accent, [0x11, 0x22, 0x33]);
+        // Only the Light preset follows the system, and only when asked to.
+        let dark_home = HomeConf::parse("theme_mode=dark\n");
+        let light_follow =
+            Config::parse("[theme]\nname = \"light\"\nfollow_system = true\n").unwrap();
+        assert_eq!(light_follow.theme(&dark_home).id, "futuristic-scifi");
+        assert_eq!(light_follow.theme(&home).id, "light");
+        let light_fixed = Config::parse("[theme]\nname = \"light\"\n").unwrap();
+        assert_eq!(light_fixed.theme(&dark_home).id, "light");
         let pinned = Config::parse("[theme]\nname = \"cyberpunk\"\n").unwrap();
         assert_eq!(pinned.theme(&home).id, "cyberpunk");
         let hc = Config::parse("[accessibility]\nhigh_contrast = true\n").unwrap();
