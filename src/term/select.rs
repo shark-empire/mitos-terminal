@@ -299,8 +299,8 @@ impl Term {
                 if start > 0 && row.cells[start].flags & attr::WIDE_TAIL != 0 {
                     start -= 1;
                 }
-                for x in start..x1c {
-                    self.push_cell_text(&row.cells[x], &mut seg);
+                for cell in &row.cells[start..x1c] {
+                    self.push_cell_text(cell, &mut seg);
                 }
             }
             let joins_next = row.wrapped && !block && line != hi.line;

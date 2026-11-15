@@ -294,8 +294,8 @@ impl Term {
         }
         let blank = self.blank();
         self.grid[top..=bottom].rotate_right(n);
-        for i in top..top + n {
-            self.grid[i].reset(blank);
+        for row in &mut self.grid[top..top + n] {
+            row.reset(blank);
         }
         self.selection = None;
         self.mark_all_dirty();
