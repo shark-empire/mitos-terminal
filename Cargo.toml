@@ -46,9 +46,7 @@ open = "5.0"
 toml = "0.8"            # terminal.toml (profiles, themes, keybindings, policy)
 libc = "0.2"            # kill(2), signal handling, getuid (already in the tree via portable-pty)
 unicode-width = "0.1"   # Cell widths (CJK / emoji / combining marks)
-
-[patch.crates-io]
-objc2 = { git = "https://github.com/madsmtm/objc2", rev = "8a5abac" } 
+ 
 
 # Speed is a hard requirement for every MITOS component.
 # NOTE: do not switch to panic = "abort" — session-level crash isolation
