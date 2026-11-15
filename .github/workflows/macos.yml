@@ -44,9 +44,15 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
+      # Pinned, not `stable`: eframe 0.28 -> winit 0.29 -> objc2 0.4.1, which no longer compiles on
+      # Rust 1.100 (E0277 "... is not an iterator" in objc2-0.4.1/src/declare/ivar_forwarding_impls.rs;
+      # the same trait-solver class of breakage as rust-lang/rust#109632). 1.99.1 is the stable
+      # release that preceded it. Unpin once eframe/egui is upgraded to a winit 0.30+ release
+      # (objc2 >= 0.5), or once objc2 0.4.x builds on current stable again.
       - name: Setup Rust toolchain (Intel target)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           targets: x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - name: cargo build (standalone, release, Intel)
