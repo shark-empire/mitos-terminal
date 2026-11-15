@@ -91,7 +91,7 @@ size = 14.0
 name = "futuristic-scifi"     # futuristic-scifi | cyberpunk | glass-neon | minimal-dark
                                # | light | classic | retro-crt | high-contrast-dark
                                # | high-contrast-light | custom
-follow_system = true          # let home.conf's theme_mode swap Sci-Fi <-> Light
+follow_system = false         # true: the Light preset switches to Sci-Fi while the system is dark
 # accent = "#46b8e8"          # any of accent/foreground/background/selection/
                                # border/surface/glow_color overrides the preset
 
