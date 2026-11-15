@@ -92,6 +92,7 @@ const PANE_MENU: &[Option<(&str, Action)>] = &[
     Some(("Split right", Action::SplitRight)),
     Some(("Split down", Action::SplitDown)),
     Some(("New tab", Action::NewTab)),
+    Some(("New window", Action::NewWindow)),
     Some(("Close pane", Action::ClosePane)),
     None,
     Some(("Find…", Action::Find)),
@@ -812,11 +813,9 @@ impl TerminalApp {
                                 // wmctrl does not exist here; ask for the Dock icon to bounce
                                 // (macOS ignores this while the app is already in front).
                                 if !self.window_focused {
-                                    ctx.send_viewport_cmd(
-                                        egui::ViewportCommand::RequestUserAttention(
-                                            egui::UserAttentionType::Informational,
-                                        ),
-                                    );
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                                        egui::UserAttentionType::Informational,
+                                    ));
                                 }
                             } else {
                                 crate::platform::request_urgent("MITOS Terminal");
@@ -1279,11 +1278,11 @@ impl eframe::App for TerminalApp {
                             }
                             ui.add_space(4.0);
                         }
-                        if ui
-                            .button("+")
-                            .on_hover_text("New tab (Ctrl+Shift+T)")
-                            .clicked()
-                        {
+                        let new_tab_tip = match config::shortcut_for(&self.keymap, Action::NewTab) {
+                            Some(s) => format!("New tab ({})", config::display_chord(&s)),
+                            None => "New tab".to_string(),
+                        };
+                        if ui.button("+").on_hover_text(new_tab_tip).clicked() {
                             self.new_pane_in_active_tab(ctx, None);
                         }
                         if let Some(g) = goto {
@@ -1746,11 +1745,20 @@ impl TerminalApp {
             self.registry.set_active(pane_id);
         }
         let mut chosen = None;
+        let keymap = &self.keymap;
         let _ = resp.context_menu(|ui| {
             for entry in PANE_MENU {
                 match entry {
                     Some((label, action)) => {
-                        if ui.button(*label).clicked() {
+                        // The shortcut is shown next to the entry (Cmd+N on a Mac, ...), so the
+                        // keys can be found without reading the docs.
+                        let shortcut = config::shortcut_for(keymap, *action)
+                            .map(|s| config::display_chord(&s))
+                            .unwrap_or_default();
+                        if ui
+                            .add(egui::Button::new(*label).shortcut_text(shortcut))
+                            .clicked()
+                        {
                             chosen = Some(*action);
                             ui.close_menu();
                         }
@@ -2399,10 +2407,7 @@ impl TerminalApp {
             // A failed save used to be ignored, so the settings looked applied and then were gone
             // after a restart.
             if let Err(e) = self.config.save() {
-                let msg = format!(
-                    "Could not save settings to {}: {e}",
-                    Config::path().display()
-                );
+                let msg = format!("Could not save settings to {}: {e}", Config::path().display());
                 eprintln!("[mitos-terminal] {msg}");
                 self.startup_errors = vec![msg];
                 self.show_error_bar = true;

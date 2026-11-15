@@ -153,7 +153,7 @@ On macOS the Command key is used as well (`Cmd+T`, `Cmd+W`, `Cmd+D`, `Cmd+F`, `C
 `Cmd+1`–`9` instead of `Alt+1`–`9`, `Cmd+Click` for links, `Ctrl+Cmd+F` for full screen, ...; the
 plain `Ctrl+F/G/=/-` defaults are left to the shell there); see
 `docs/MACOS.md`. A chord bound to one of these actions is not also sent to the program running in
-the pane.
+the pane. New window: `Ctrl+Shift+N` (`Cmd+N` on macOS), or right-click → New window.
 
 ## Themes
 

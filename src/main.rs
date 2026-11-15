@@ -5,6 +5,17 @@
 use mitos_terminal::app::TerminalApp;
 use mitos_terminal::config::Config;
 
+/// The window and Dock icon. Without one, eframe puts its own default icon (a lowercase "e") on the
+/// window and, on macOS, in the Dock, replacing even the app bundle's own .icns. 256 x 256 raw RGBA
+/// (straight alpha), made by `packaging/macos/gen_icon.py`.
+fn app_icon() -> egui::IconData {
+    egui::IconData {
+        rgba: include_bytes!("../assets/app-icon-256.rgba").to_vec(),
+        width: 256,
+        height: 256,
+    }
+}
+
 fn make_options() -> eframe::NativeOptions {
     // A lightweight, throwaway load just to size the window before eframe
     // creates it — `TerminalApp::new` loads the config again (cheap, and it
@@ -15,6 +26,7 @@ fn make_options() -> eframe::NativeOptions {
             .with_inner_size([cfg.window.width, cfg.window.height])
             .with_min_inner_size([320.0, 160.0])
             .with_title("MITOS Terminal")
+            .with_icon(app_icon())
             .with_decorations(cfg.window.decorations)
             // Needed for `[window] opacity` / the glass theme presets: each
             // pane paints its own translucent surface (see `render.rs`),
@@ -76,4 +88,17 @@ fn relaunch_with_software_rendering(original: eframe::Error) -> eframe::Result<(
 #[cfg(not(all(unix, not(target_os = "macos"))))]
 fn relaunch_with_software_rendering(original: eframe::Error) -> eframe::Result<()> {
     Err(original)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn app_icon_is_the_size_it_claims() {
+        let icon = super::app_icon();
+        assert_eq!(icon.rgba.len(), icon.width as usize * icon.height as usize * 4);
+        assert!(
+            icon.rgba.chunks(4).any(|px| px[3] > 0),
+            "the embedded icon must not be blank"
+        );
+    }
 }

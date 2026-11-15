@@ -1546,6 +1546,21 @@ pub fn build_keymap(user: &BTreeMap<String, String>) -> (Vec<(Chord, Action)>, V
     (map, problems)
 }
 
+/// A chord string such as `"cmd+shift+t"` written the way menus show it: `"Cmd+Shift+T"`.
+pub fn display_chord(chord: &str) -> String {
+    chord
+        .split('+')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
 /// The first binding for `action`, formatted for menus (`"ctrl+shift+t"`).
 pub fn shortcut_for(map: &[(Chord, Action)], action: Action) -> Option<String> {
     map.iter()
@@ -1787,6 +1802,14 @@ mod tests {
             !t.matches(Key::T, true, false, false),
             "modifiers must match exactly"
         );
+    }
+
+    #[test]
+    fn chords_are_displayed_the_way_menus_write_them() {
+        assert_eq!(display_chord("cmd+shift+t"), "Cmd+Shift+T");
+        assert_eq!(display_chord("ctrl+comma"), "Ctrl+Comma");
+        assert_eq!(display_chord("f11"), "F11");
+        assert_eq!(display_chord(""), "");
     }
 
     #[test]

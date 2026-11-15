@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Regenerates AppIcon-1024.png and AppIcon.icns (needs Pillow: `pip3 install pillow`).
+"""Regenerates AppIcon-1024.png, AppIcon.icns and assets/app-icon-256.rgba (needs Pillow:
+`pip3 install pillow`).
 
-You do not need to run this to build the app: both files are committed. Run it only if you
+You do not need to run this to build the app: all three files are committed. Run it only if you
 change the artwork below. The colours are the default "Futuristic Sci-Fi" theme's
 (src/theme.rs): near-black background, cyan prompt.
+
+assets/app-icon-256.rgba is what the binary itself embeds (src/main.rs): 256 x 256 raw RGBA,
+straight alpha. eframe puts it on the window and, on macOS, in the Dock; without it eframe falls
+back to its own default icon (a lowercase "e").
 """
 import io
 import struct
@@ -112,8 +117,14 @@ def write_icns(master, path):
     path.write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + body)
 
 
+def write_rgba(master, path, px=256):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(master.resize((px, px), Image.LANCZOS).convert("RGBA").tobytes())
+
+
 if __name__ == "__main__":
     master = build()
     master.save(HERE / "AppIcon-1024.png", optimize=True)
     write_icns(master, HERE / "AppIcon.icns")
-    print("wrote AppIcon-1024.png and AppIcon.icns")
+    write_rgba(master, HERE.parent.parent / "assets" / "app-icon-256.rgba")
+    print("wrote AppIcon-1024.png, AppIcon.icns and assets/app-icon-256.rgba")

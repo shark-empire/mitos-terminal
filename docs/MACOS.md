@@ -166,6 +166,21 @@ and on stderr (run it from Terminal to see that), instead of silently ignoring e
   zsh/bash).
 - **Links:** `Cmd+click` opens a link (macOS turns `Ctrl+click` into a right-click). `[links] mode =
   "click"` makes a plain click open it.
+- **New window:** `Cmd+N`, or right-click in the terminal → **New window**, or the command palette
+  (`Cmd+Shift+P`). Each window is its own copy of the app (the way Alacritty does it on a Mac), so
+  every window has its own Dock icon and `Cmd+Q` quits only the window you press it in. There is no
+  File menu in the menu bar. Closing the last pane (`Cmd+W`) closes that window.
+- **Dock icon:** the app sets its own icon. (The generic lowercase "e" that earlier builds showed
+  was eframe's built-in default icon, applied at start-up on top of the app's icon.) If the Dock or
+  Finder still show an old icon after you replace the app, refresh the icon cache:
+
+  ```sh
+  touch "/Applications/MITOS Terminal.app"
+  killall Dock Finder
+  ```
+
+  and, only if that does not help, `sudo rm -rf /Library/Caches/com.apple.iconservices.store`
+  followed by `killall Dock` (a restart may be needed).
 - **Ctrl+C** always interrupts by default on macOS (`[selection] ctrl_c_copies` is off there); copy
   with `Cmd+C`.
 - Bound shortcuts are no longer also sent to the program in the pane.
