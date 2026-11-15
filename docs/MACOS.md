@@ -131,7 +131,7 @@ Implemented for macOS with the tools the system ships (`/usr/bin/osascript`, `af
   under **Script Editor** in System Settings → Notifications; allow them there if nothing appears);
 - finding a pane's working directory and running job, so new tabs and splits inherit the directory
   and closing a busy pane asks first;
-- `[theme] follow_system` follows the macOS light/dark appearance.
+- `[theme] follow_system` (off by default) lets the Light preset switch to Sci-Fi when macOS is in dark mode.
 
 Not available on macOS (these fail quietly rather than crash):
 

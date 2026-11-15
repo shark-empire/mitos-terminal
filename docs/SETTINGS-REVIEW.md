@@ -57,8 +57,8 @@ toolchain and no Mac), so the fixes were written by reading the code and checked
   back (the shipped `.config/mitos/terminal.toml` example already says so).
 - The vignette and the HUD corner ticks are now visible over the text area instead of only in the
   margin; the default presets use small values, so this is subtle.
-- Light-mode Macs start in the Light preset while **Follow system light/dark** is ticked (it is by
-  default); untick it to keep the Sci-Fi preset.
+- Futuristic Sci-Fi always stays dark. **Follow system** is off by default and only affects the
+  Light preset, which then switches to Sci-Fi while the system is in dark mode.
 - On macOS, `Ctrl+C` always interrupts by default (`ctrl_c_copies` is off there) and zsh is started
   as a login shell with the integration loaded.
 
