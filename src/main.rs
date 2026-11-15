@@ -95,7 +95,10 @@ mod tests {
     #[test]
     fn app_icon_is_the_size_it_claims() {
         let icon = super::app_icon();
-        assert_eq!(icon.rgba.len(), icon.width as usize * icon.height as usize * 4);
+        assert_eq!(
+            icon.rgba.len(),
+            icon.width as usize * icon.height as usize * 4
+        );
         assert!(
             icon.rgba.chunks(4).any(|px| px[3] > 0),
             "the embedded icon must not be blank"
