@@ -45,9 +45,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust toolchain (Intel target)
-        uses: dtolnay/rust-toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.75.0
           targets: x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - name: cargo build (standalone, release, Intel)
